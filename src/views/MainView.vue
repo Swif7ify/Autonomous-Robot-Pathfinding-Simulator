@@ -10,15 +10,30 @@ const miniMapFog = ref(null)
 const patterns = ['lawnmower', 'spiral', 'random']
 const currentPattern = ref('lawnmower')
 
+// --- Mode state ---
+const modes = ['auto', 'manual']
+const currentMode = ref('auto')
+
 function togglePattern() {
   const idx = patterns.indexOf(currentPattern.value)
   currentPattern.value = patterns[(idx + 1) % patterns.length]
 }
+function toggleMode() {
+  const idx = modes.indexOf(currentMode.value)
+  currentMode.value = modes[(idx + 1) % modes.length]
+}
 
-// --- LiDAR settings ---
 const lidarRadius = ref(10)
 const lidarNumRays = ref(36)
 const lidarFov = ref(Math.PI / 3) // 60 degrees in radians
+
+// --- Manual control state ---
+let manualControl = {
+  forward: false,
+  backward: false,
+  left: false,
+  right: false,
+}
 
 onMounted(() => {
   const fogCtx = miniMapFog.value.getContext('2d')
@@ -99,8 +114,18 @@ onMounted(() => {
 
   // Main Camera (First-person)
   const mainRenderer = new THREE.WebGLRenderer({ canvas: mainCanvas.value })
-  mainRenderer.setSize(800, 600)
-  const mainCamera = new THREE.PerspectiveCamera(75, 800 / 600, 0.1, 1000)
+  mainRenderer.setSize(window.innerWidth, window.innerHeight)
+  const mainCamera = new THREE.PerspectiveCamera(
+    75,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000,
+  )
+  window.addEventListener('resize', () => {
+    mainRenderer.setSize(window.innerWidth, window.innerHeight)
+    mainCamera.aspect = window.innerWidth / window.innerHeight
+    mainCamera.updateProjectionMatrix()
+  })
 
   // Minimap (Top-down)
   const miniRenderer = new THREE.WebGLRenderer({ canvas: miniMapCanvas.value })
@@ -239,30 +264,75 @@ onMounted(() => {
   let path = []
   let pathIndex = 0
 
+  // --- Keyboard controls for manual mode ---
+  window.addEventListener('keydown', (e) => {
+    if (currentMode.value !== 'manual') return
+    if (e.key === 'w' || e.key === 'ArrowUp') manualControl.forward = true
+    if (e.key === 's' || e.key === 'ArrowDown') manualControl.backward = true
+    if (e.key === 'a' || e.key === 'ArrowLeft') manualControl.left = true
+    if (e.key === 'd' || e.key === 'ArrowRight') manualControl.right = true
+  })
+  window.addEventListener('keyup', (e) => {
+    if (currentMode.value !== 'manual') return
+    if (e.key === 'w' || e.key === 'ArrowUp') manualControl.forward = false
+    if (e.key === 's' || e.key === 'ArrowDown') manualControl.backward = false
+    if (e.key === 'a' || e.key === 'ArrowLeft') manualControl.left = false
+    if (e.key === 'd' || e.key === 'ArrowRight') manualControl.right = false
+  })
+
   function animate() {
     requestAnimationFrame(animate)
 
-    // --- Smooth movement handler for lawmmower ---
-    if (moveTarget) {
-      const dx = moveTarget.x - robot.position.x
-      const dz = moveTarget.z - robot.position.z
-      const dist = Math.hypot(dx, dz)
-      if (dist > moveSpeed) {
-        const angle = Math.atan2(dx, dz)
-        robot.rotation.y = angle
-        robot.position.x += Math.sin(angle) * moveSpeed
-        robot.position.z += Math.cos(angle) * moveSpeed
-        // Only move, skip rest of logic until done
-        renderCameras()
-        return
-      } else {
-        robot.position.x = moveTarget.x
-        robot.position.z = moveTarget.z
-        moveTarget = null
+    // --- Manual mode movement ---
+    if (currentMode.value === 'manual') {
+      let move = false
+      let angle = robot.rotation.y
+      let moveStepManual = 0.12
+      if (manualControl.left) angle -= 0.08
+      if (manualControl.right) angle += 0.08
+      robot.rotation.y = angle
+      let dx = 0,
+        dz = 0
+      if (manualControl.forward) {
+        dx += Math.sin(angle) * moveStepManual
+        dz += Math.cos(angle) * moveStepManual
+        move = true
+      }
+      if (manualControl.backward) {
+        dx -= Math.sin(angle) * moveStepManual
+        dz -= Math.cos(angle) * moveStepManual
+        move = true
+      }
+      if (move) {
+        const nextX = robot.position.x + dx
+        const nextZ = robot.position.z + dz
+        if (!isWall(nextX, nextZ)) {
+          robot.position.x = nextX
+          robot.position.z = nextZ
+        }
+      }
+    } else {
+      // --- Smooth movement handler for lawmmower ---
+      if (moveTarget) {
+        const dx = moveTarget.x - robot.position.x
+        const dz = moveTarget.z - robot.position.z
+        const dist = Math.hypot(dx, dz)
+        if (dist > moveSpeed) {
+          const angle = Math.atan2(dx, dz)
+          robot.rotation.y = angle
+          robot.position.x += Math.sin(angle) * moveSpeed
+          robot.position.z += Math.cos(angle) * moveSpeed
+          renderCameras()
+          return
+        } else {
+          robot.position.x = moveTarget.x
+          robot.position.z = moveTarget.z
+          moveTarget = null
+        }
       }
     }
 
-    // --- LiDAR simulation: forward-facing cone ---
+    // --- LiDAR simulation: forward-facing cone (ALWAYS RUN) ---
     lidarGroup.clear()
     const fov = lidarFov.value
     const numRays = lidarNumRays.value
@@ -335,147 +405,145 @@ onMounted(() => {
     }
     lidarAngle += 0.03
 
-    // --- Pathfinding: Move robot toward heat signature if detected ---
-    if (heatDetected) {
-      seekingHeat = true // Start seeking if detected
-    }
-
-    if (seekingHeat) {
-      const target = new THREE.Vector3(heat.position.x, robot.position.y, heat.position.z)
-      const direction = target.clone().sub(robot.position)
-      const distance = direction.length()
-
-      if (distance > 0.1) {
-        direction.normalize()
-        robot.position.add(direction.multiplyScalar(speed))
-        // Rotate robot to face target
-        const angle = Math.atan2(target.x - robot.position.x, target.z - robot.position.z)
-        robot.rotation.y = angle
-        targetReached = false
-      } else if (!targetReached) {
-        placeHeatSignature()
-        targetReached = true
-        seekingHeat = false // Reset seeking for new target
-        heatDetected = false
+    // --- Only run pathfinding/exploration in auto mode ---
+    if (currentMode.value !== 'manual') {
+      // --- Pathfinding: Move robot toward heat signature if detected ---
+      if (heatDetected) {
+        seekingHeat = true // Start seeking if detected
       }
-    } else if (heatDetected && !seekingHeat) {
-      seekingHeat = true
-      // Compute path using A*
-      const start = worldToGrid(robot.position.x, robot.position.z)
-      const goal = worldToGrid(heat.position.x, heat.position.z)
-      path = astar(start, goal, grid) || []
-      pathIndex = 0
-    } else if (seekingHeat && path.length > 0 && pathIndex < path.length) {
-      const wp = gridToWorld(path[pathIndex].x, path[pathIndex].y)
-      const target = new THREE.Vector3(wp.x, robot.position.y, wp.z)
-      const direction = target.clone().sub(robot.position)
-      const distance = direction.length()
-      if (distance > 0.1) {
-        direction.normalize()
-        robot.position.add(direction.multiplyScalar(speed))
-        // Rotate robot to face waypoint
-        const angle = Math.atan2(target.x - robot.position.x, target.z - robot.position.z)
-        robot.rotation.y = angle
-        targetReached = false
-      } else {
-        pathIndex++
-        if (pathIndex >= path.length) {
+
+      if (seekingHeat) {
+        const target = new THREE.Vector3(heat.position.x, robot.position.y, heat.position.z)
+        const direction = target.clone().sub(robot.position)
+        const distance = direction.length()
+
+        if (distance > 0.1) {
+          direction.normalize()
+          robot.position.add(direction.multiplyScalar(speed))
+          // Rotate robot to face target
+          const angle = Math.atan2(target.x - robot.position.x, target.z - robot.position.z)
+          robot.rotation.y = angle
+          targetReached = false
+        } else if (!targetReached) {
           placeHeatSignature()
           targetReached = true
-          seekingHeat = false
+          seekingHeat = false // Reset seeking for new target
           heatDetected = false
-          path = []
         }
-      }
-    } else if (exploring) {
-      // --- Pattern selection ---
-      if (currentPattern.value === 'lawnmower') {
-        // --- Lawnmower (zigzag) pattern for exploration ---
-        const minX = -FIELD_SIZE / 2 + 1
-        const maxX = FIELD_SIZE / 2 - 1
-        const minZ = -FIELD_SIZE / 2 + 1
-        const maxZ = FIELD_SIZE / 2 - 1
+      } else if (heatDetected && !seekingHeat) {
+        seekingHeat = true
+        // Compute path using A*
+        const start = worldToGrid(robot.position.x, robot.position.z)
+        const goal = worldToGrid(heat.position.x, heat.position.z)
+        path = astar(start, goal, grid) || []
+        pathIndex = 0
+      } else if (seekingHeat && path.length > 0 && pathIndex < path.length) {
+        const wp = gridToWorld(path[pathIndex].x, path[pathIndex].y)
+        const target = new THREE.Vector3(wp.x, robot.position.y, wp.z)
+        const direction = target.clone().sub(robot.position)
+        const distance = direction.length()
+        if (distance > 0.1) {
+          direction.normalize()
+          robot.position.add(direction.multiplyScalar(speed))
+          // Rotate robot to face waypoint
+          const angle = Math.atan2(target.x - robot.position.x, target.z - robot.position.z)
+          robot.rotation.y = angle
+          targetReached = false
+        } else {
+          pathIndex++
+          if (pathIndex >= path.length) {
+            placeHeatSignature()
+            targetReached = true
+            seekingHeat = false
+            heatDetected = false
+            path = []
+          }
+        }
+      } else if (exploring) {
+        // --- Pattern selection ---
+        if (currentPattern.value === 'lawnmower') {
+          // --- Lawnmower (zigzag) pattern for exploration ---
+          const minX = -FIELD_SIZE / 2 + 1
+          const maxX = FIELD_SIZE / 2 - 1
+          const minZ = -FIELD_SIZE / 2 + 1
+          const maxZ = FIELD_SIZE / 2 - 1
 
-        // Calculate target X for this row
-        const targetX = minX + mowRow * mowSpacing
+          // Calculate target X for this row
+          const targetX = minX + mowRow * mowSpacing
 
-        // Check if wall is directly ahead
-        const nextZ = robot.position.z + mowDirection * mowStep
-        const nextX = robot.position.x
-        const wallAhead = isWall(nextX, nextZ)
+          // Check if wall is directly ahead using LiDAR
+          const nextZ = robot.position.z + mowDirection * mowStep
+          const nextX = robot.position.x
+          const wallAhead = isWall(nextX, nextZ)
 
-        if (
-          wallAhead ||
-          (mowDirection === 1 && nextZ > maxZ) ||
-          (mowDirection === -1 && nextZ < minZ)
-        ) {
-          mowRow++
-          if (targetX > maxX) {
-            exploring = false // Finished all rows
+          if (
+            wallAhead || // <--- This is the key: if LiDAR sees a wall ahead, reverse!
+            (mowDirection === 1 && nextZ > maxZ) ||
+            (mowDirection === -1 && nextZ < minZ)
+          ) {
+            mowRow++
+            if (targetX > maxX) {
+              exploring = false // Finished all rows
+            } else {
+              mowDirection *= -1
+              moveTo(targetX, mowDirection === 1 ? minZ : maxZ)
+            }
           } else {
-            mowDirection *= -1
-            moveTo(targetX, mowDirection === 1 ? minZ : maxZ)
+            robot.position.z = nextZ
           }
-        } else {
-          robot.position.z = nextZ
-        }
-        robot.rotation.y = mowDirection === 1 ? 0 : Math.PI
-      } else if (currentPattern.value === 'spiral') {
-        // --- Spiral pattern ---
-        if (!robot.spiral) {
-          // Initialize spiral state
-          robot.spiral = {
-            angle: 0,
-            radius: 2,
-            center: { x: 0, z: 0 },
-            step: 0.08,
-            grow: 0.02,
+          robot.rotation.y = mowDirection === 1 ? 0 : Math.PI
+        } else if (currentPattern.value === 'spiral') {
+          // --- Spiral pattern ---
+          if (!robot.spiral) {
+            // Initialize spiral state
+            robot.spiral = {
+              angle: 0,
+              radius: 2,
+              center: { x: 0, z: 0 },
+              step: 0.08,
+              grow: 0.02,
+            }
+          }
+          const s = robot.spiral
+          s.angle += 0.08
+          s.radius += s.grow / (2 * Math.PI)
+          const prevX = robot.position.x
+          const prevZ = robot.position.z
+          const nextX = s.center.x + Math.cos(s.angle) * s.radius
+          const nextZ = s.center.z + Math.sin(s.angle) * s.radius
+          if (!isWall(nextX, nextZ)) {
+            robot.rotation.y = Math.atan2(nextX - prevX, nextZ - prevZ)
+            robot.position.x = nextX
+            robot.position.z = nextZ
+          } else {
+            exploring = false
+          }
+        } else if (currentPattern.value === 'random') {
+          // --- Random walk pattern ---
+          if (!robot.randomWalk || robot.randomWalk.steps <= 0) {
+            // Pick a new random direction
+            const angle = Math.random() * Math.PI * 2
+            robot.randomWalk = {
+              angle,
+              steps: Math.floor(20 + Math.random() * 40),
+            }
+          }
+          const rw = robot.randomWalk
+          const nextX = robot.position.x + Math.sin(rw.angle) * mowStep
+          const nextZ = robot.position.z + Math.cos(rw.angle) * mowStep
+          if (!isWall(nextX, nextZ)) {
+            robot.position.x = nextX
+            robot.position.z = nextZ
+            robot.rotation.y = rw.angle
+            rw.steps--
+          } else {
+            // Pick a new direction if hit wall
+            robot.randomWalk.steps = 0
           }
         }
-        const s = robot.spiral
-        s.angle += 0.08
-        s.radius += s.grow / (2 * Math.PI)
-        const prevX = robot.position.x
-        const prevZ = robot.position.z
-        const nextX = s.center.x + Math.cos(s.angle) * s.radius
-        const nextZ = s.center.z + Math.sin(s.angle) * s.radius
-        if (!isWall(nextX, nextZ)) {
-          robot.rotation.y = Math.atan2(nextX - prevX, nextZ - prevZ)
-          robot.position.x = nextX
-          robot.position.z = nextZ
-        } else {
-          exploring = false
-        }
-      } else if (currentPattern.value === 'random') {
-        // --- Random walk pattern ---
-        if (!robot.randomWalk || robot.randomWalk.steps <= 0) {
-          // Pick a new random direction
-          const angle = Math.random() * Math.PI * 2
-          robot.randomWalk = {
-            angle,
-            steps: Math.floor(20 + Math.random() * 40),
-          }
-        }
-        const rw = robot.randomWalk
-        const nextX = robot.position.x + Math.sin(rw.angle) * mowStep
-        const nextZ = robot.position.z + Math.cos(rw.angle) * mowStep
-        if (!isWall(nextX, nextZ)) {
-          robot.position.x = nextX
-          robot.position.z = nextZ
-          robot.rotation.y = rw.angle
-          rw.steps--
-        } else {
-          // Pick a new direction if hit wall
-          robot.randomWalk.steps = 0
-        }
+      } else {
+        // Idle: stop moving
       }
-    } else {
-      // Idle: stop moving
-    }
-
-    // --- Stop exploring if fog is cleared ---
-    if (exploring && isFogCleared()) {
-      exploring = false
     }
 
     renderCameras()
@@ -504,6 +572,7 @@ onMounted(() => {
   <div class="main-view">
     <div class="pattern-toggle">
       <button @click="togglePattern">Pattern: {{ currentPattern }}</button>
+      <button @click="toggleMode">Mode: {{ currentMode }}</button>
     </div>
     <div class="settings-panel">
       <label>
@@ -534,11 +603,10 @@ onMounted(() => {
 
 <style scoped>
 .main-view {
-  display: flex;
-  gap: 20px;
   position: relative;
-  width: 100dvw;
-  height: 100dvh;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .pattern-toggle {
@@ -555,6 +623,7 @@ onMounted(() => {
   background: #333;
   color: #fff;
   cursor: pointer;
+  margin-right: 0.5em;
 }
 
 .settings-panel {
@@ -580,12 +649,37 @@ onMounted(() => {
   flex: 1;
 }
 
-.minimap {
-  position: relative;
-}
-.minimap canvas {
+.main-camera {
   position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
 }
+
+.main-camera canvas {
+  width: 100vw !important;
+  height: 100vh !important;
+  display: block;
+  border: none;
+}
+
+.minimap {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 300px;
+  height: 300px;
+  z-index: 20;
+}
+
+.minimap canvas {
+  width: 300px !important;
+  height: 300px !important;
+  border: 2px solid #666;
+  display: block;
+}
+
 .minimap-fog {
   position: absolute;
   top: 0;
