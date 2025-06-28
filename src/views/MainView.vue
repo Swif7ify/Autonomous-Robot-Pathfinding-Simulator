@@ -1,15 +1,3 @@
-<template>
-  <div class="main-view">
-    <div class="main-camera">
-      <canvas ref="mainCanvas"></canvas>
-    </div>
-    <div class="minimap">
-      <canvas ref="miniMapCanvas"></canvas>
-      <canvas ref="miniMapFog" class="minimap-fog"></canvas>
-    </div>
-  </div>
-</template>
-
 <script setup>
 import { onMounted, ref } from 'vue'
 import * as THREE from 'three'
@@ -17,6 +5,20 @@ import * as THREE from 'three'
 const mainCanvas = ref(null)
 const miniMapCanvas = ref(null)
 const miniMapFog = ref(null)
+
+// --- Pattern toggle state ---
+const patterns = ['lawnmower', 'spiral', 'random']
+const currentPattern = ref('lawnmower')
+
+function togglePattern() {
+  const idx = patterns.indexOf(currentPattern.value)
+  currentPattern.value = patterns[(idx + 1) % patterns.length]
+}
+
+// --- LiDAR settings ---
+const lidarRadius = ref(10)
+const lidarNumRays = ref(36)
+const lidarFov = ref(Math.PI / 3) // 60 degrees in radians
 
 onMounted(() => {
   const fogCtx = miniMapFog.value.getContext('2d')
@@ -72,7 +74,10 @@ onMounted(() => {
   const robotGeometry = new THREE.BoxGeometry(1, 0.3, 1.5)
   const robotMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 })
   const robot = new THREE.Mesh(robotGeometry, robotMaterial)
-  robot.position.set(0, 0.25, 0)
+  // Spawn robot at a random location within the field (avoid walls)
+  const robotX = (Math.random() - 0.5) * (FIELD_SIZE - 2)
+  const robotZ = (Math.random() - 0.5) * (FIELD_SIZE - 2)
+  robot.position.set(robotX, 0.25, robotZ)
   mainScene.add(robot)
 
   // "Thermal" target (heat signature)
@@ -100,7 +105,14 @@ onMounted(() => {
   // Minimap (Top-down)
   const miniRenderer = new THREE.WebGLRenderer({ canvas: miniMapCanvas.value })
   miniRenderer.setSize(300, 300)
-  const miniCamera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 100)
+  const miniCamera = new THREE.OrthographicCamera(
+    -FIELD_SIZE / 2,
+    FIELD_SIZE / 2,
+    FIELD_SIZE / 2,
+    -FIELD_SIZE / 2,
+    0.1,
+    100,
+  )
   miniCamera.position.set(0, 20, 0)
   miniCamera.lookAt(0, 0, 0)
   miniCamera.up.set(0, 0, -1)
@@ -204,7 +216,24 @@ onMounted(() => {
   const mowStep = 0.08
   const mowSpacing = 2
 
+  // --- Smooth movement variables for lawmmower ---
+  let moveTarget = null
+  const moveSpeed = 0.12
+
+  function moveTo(x, z) {
+    moveTarget = { x, z }
+  }
+
   // Animation loop
+
+  function isWall(x, z) {
+    // Convert to grid
+    const gx = Math.floor(((x + FIELD_SIZE / 2) / FIELD_SIZE) * GRID_SIZE)
+    const gz = Math.floor(((z + FIELD_SIZE / 2) / FIELD_SIZE) * GRID_SIZE)
+    // Out of bounds is wall
+    if (gx < 0 || gx >= GRID_SIZE || gz < 0 || gz >= GRID_SIZE) return true
+    return grid[gz][gx] === 1
+  }
 
   let lidarAngle = 0
   let path = []
@@ -213,44 +242,73 @@ onMounted(() => {
   function animate() {
     requestAnimationFrame(animate)
 
+    // --- Smooth movement handler for lawmmower ---
+    if (moveTarget) {
+      const dx = moveTarget.x - robot.position.x
+      const dz = moveTarget.z - robot.position.z
+      const dist = Math.hypot(dx, dz)
+      if (dist > moveSpeed) {
+        const angle = Math.atan2(dx, dz)
+        robot.rotation.y = angle
+        robot.position.x += Math.sin(angle) * moveSpeed
+        robot.position.z += Math.cos(angle) * moveSpeed
+        // Only move, skip rest of logic until done
+        renderCameras()
+        return
+      } else {
+        robot.position.x = moveTarget.x
+        robot.position.z = moveTarget.z
+        moveTarget = null
+      }
+    }
+
     // --- LiDAR simulation: forward-facing cone ---
     lidarGroup.clear()
-    const lidarRadius = 5
+    const fov = lidarFov.value
+    const numRays = lidarNumRays.value
+    const lidarRadiusValue = lidarRadius.value
     heatDetected = false // Reset before LiDAR scan
 
-    const fov = Math.PI / 3 // 60 degrees in radians
-    const numRays = 36
     const robotYaw = robot.rotation.y
 
     for (let i = 0; i < numRays; i++) {
-      // Angle for this ray, centered on robot's forward direction
       const angle = robotYaw - fov / 2 + (i / (numRays - 1)) * fov
-      const x = robot.position.x + Math.sin(angle) * lidarRadius
-      const z = robot.position.z + Math.cos(angle) * lidarRadius
+      let hitWall = false
+      let lastX = robot.position.x
+      let lastZ = robot.position.z
 
-      const pointGeometry = new THREE.SphereGeometry(0.05, 8, 8)
-      const pointMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff })
-      const point = new THREE.Mesh(pointGeometry, pointMaterial)
-      point.position.set(x, 0.1, z)
-      lidarGroup.add(point)
+      // Step along the ray in small increments
+      for (let r = 0; r <= lidarRadiusValue; r += 0.1) {
+        const x = robot.position.x + Math.sin(angle) * r
+        const z = robot.position.z + Math.cos(angle) * r
 
-      const [rx, rz] = worldToMiniMap(robot.position.x, robot.position.z)
-      const [mx, mz] = worldToMiniMap(x, z)
-      const steps = 30 // More steps = smoother line
+        if (isWall(x, z)) {
+          hitWall = true
+          break
+        }
 
-      for (let s = 0; s <= steps; s++) {
-        const px = rx + (mx - rx) * (s / steps)
-        const pz = rz + (mz - rz) * (s / steps)
+        // Draw fog clearing at this point
+        const [rx, rz] = worldToMiniMap(x, z)
         fogCtx.save()
         fogCtx.globalCompositeOperation = 'destination-out'
         fogCtx.beginPath()
-        fogCtx.arc(px, pz, 10, 0, 2 * Math.PI)
+        fogCtx.arc(rx, rz, 10, 0, 2 * Math.PI)
         fogCtx.fill()
         fogCtx.restore()
+
+        lastX = x
+        lastZ = z
       }
 
+      // Draw the LiDAR point at the last visible position
+      const pointGeometry = new THREE.SphereGeometry(0.05, 8, 8)
+      const pointMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff })
+      const point = new THREE.Mesh(pointGeometry, pointMaterial)
+      point.position.set(lastX, 0.1, lastZ)
+      lidarGroup.add(point)
+
       // --- Heat detection logic ---
-      const distToHeat = Math.hypot(x - heat.position.x, z - heat.position.z)
+      const distToHeat = Math.hypot(lastX - heat.position.x, lastZ - heat.position.z)
       if (distToHeat < 0.6) {
         heatDetected = true
       }
@@ -263,7 +321,7 @@ onMounted(() => {
       heat.position.z - robot.position.z,
     )
     const distToHeat = toHeat.length()
-    if (distToHeat < lidarRadius) {
+    if (distToHeat < lidarRadiusValue) {
       // Robot's forward vector
       const forward = new THREE.Vector3(Math.sin(robotYaw), 0, Math.cos(robotYaw))
       toHeat.normalize()
@@ -330,30 +388,87 @@ onMounted(() => {
         }
       }
     } else if (exploring) {
-      // --- Lawnmower (zigzag) pattern for exploration ---
-      const minX = -FIELD_SIZE / 2 + 1
-      const maxX = FIELD_SIZE / 2 - 1
-      const minZ = -FIELD_SIZE / 2 + 1
-      const maxZ = FIELD_SIZE / 2 - 1
+      // --- Pattern selection ---
+      if (currentPattern.value === 'lawnmower') {
+        // --- Lawnmower (zigzag) pattern for exploration ---
+        const minX = -FIELD_SIZE / 2 + 1
+        const maxX = FIELD_SIZE / 2 - 1
+        const minZ = -FIELD_SIZE / 2 + 1
+        const maxZ = FIELD_SIZE / 2 - 1
 
-      // Calculate target X for this row
-      const targetX = minX + mowRow * mowSpacing
+        // Calculate target X for this row
+        const targetX = minX + mowRow * mowSpacing
 
-      // Move in Z (forward/back) until near wall, then shift row
-      let nextZ = robot.position.z + mowDirection * mowStep
-      if ((mowDirection === 1 && nextZ > maxZ) || (mowDirection === -1 && nextZ < minZ)) {
-        mowRow++
-        if (targetX > maxX) {
-          exploring = false // Finished all rows
+        // Check if wall is directly ahead
+        const nextZ = robot.position.z + mowDirection * mowStep
+        const nextX = robot.position.x
+        const wallAhead = isWall(nextX, nextZ)
+
+        if (
+          wallAhead ||
+          (mowDirection === 1 && nextZ > maxZ) ||
+          (mowDirection === -1 && nextZ < minZ)
+        ) {
+          mowRow++
+          if (targetX > maxX) {
+            exploring = false // Finished all rows
+          } else {
+            mowDirection *= -1
+            moveTo(targetX, mowDirection === 1 ? minZ : maxZ)
+          }
         } else {
-          mowDirection *= -1
-          robot.position.x = targetX
-          robot.position.z = mowDirection === 1 ? minZ : maxZ
+          robot.position.z = nextZ
         }
-      } else {
-        robot.position.z = nextZ
+        robot.rotation.y = mowDirection === 1 ? 0 : Math.PI
+      } else if (currentPattern.value === 'spiral') {
+        // --- Spiral pattern ---
+        if (!robot.spiral) {
+          // Initialize spiral state
+          robot.spiral = {
+            angle: 0,
+            radius: 2,
+            center: { x: 0, z: 0 },
+            step: 0.08,
+            grow: 0.02,
+          }
+        }
+        const s = robot.spiral
+        s.angle += 0.08
+        s.radius += s.grow / (2 * Math.PI)
+        const prevX = robot.position.x
+        const prevZ = robot.position.z
+        const nextX = s.center.x + Math.cos(s.angle) * s.radius
+        const nextZ = s.center.z + Math.sin(s.angle) * s.radius
+        if (!isWall(nextX, nextZ)) {
+          robot.rotation.y = Math.atan2(nextX - prevX, nextZ - prevZ)
+          robot.position.x = nextX
+          robot.position.z = nextZ
+        } else {
+          exploring = false
+        }
+      } else if (currentPattern.value === 'random') {
+        // --- Random walk pattern ---
+        if (!robot.randomWalk || robot.randomWalk.steps <= 0) {
+          // Pick a new random direction
+          const angle = Math.random() * Math.PI * 2
+          robot.randomWalk = {
+            angle,
+            steps: Math.floor(20 + Math.random() * 40),
+          }
+        }
+        const rw = robot.randomWalk
+        const nextX = robot.position.x + Math.sin(rw.angle) * mowStep
+        const nextZ = robot.position.z + Math.cos(rw.angle) * mowStep
+        if (!isWall(nextX, nextZ)) {
+          robot.position.x = nextX
+          robot.position.z = nextZ
+          robot.rotation.y = rw.angle
+          rw.steps--
+        } else {
+          // Pick a new direction if hit wall
+          robot.randomWalk.steps = 0
+        }
       }
-      robot.rotation.y = mowDirection === 1 ? 0 : Math.PI
     } else {
       // Idle: stop moving
     }
@@ -363,6 +478,10 @@ onMounted(() => {
       exploring = false
     }
 
+    renderCameras()
+  }
+
+  function renderCameras() {
     // --- First-person camera: attach to robot ---
     const cameraOffset = new THREE.Vector3(0, 0.4, 0)
     const lookDistance = 2
@@ -376,23 +495,96 @@ onMounted(() => {
     mainRenderer.render(mainScene, mainCamera)
     miniRenderer.render(mainScene, miniCamera)
   }
+
   animate()
 })
 </script>
+
+<template>
+  <div class="main-view">
+    <div class="pattern-toggle">
+      <button @click="togglePattern">Pattern: {{ currentPattern }}</button>
+    </div>
+    <div class="settings-panel">
+      <label>
+        LiDAR Radius:
+        <input type="range" min="2" max="20" step="0.1" v-model.number="lidarRadius" />
+        {{ lidarRadius }}
+      </label>
+      <label>
+        LiDAR Rays:
+        <input type="range" min="8" max="72" step="1" v-model.number="lidarNumRays" />
+        {{ lidarNumRays }}
+      </label>
+      <label>
+        LiDAR FOV:
+        <input type="range" min="0.2" max="3.14" step="0.01" v-model.number="lidarFov" />
+        {{ ((lidarFov * 180) / Math.PI).toFixed(0) }}°
+      </label>
+    </div>
+    <div class="main-camera">
+      <canvas ref="mainCanvas"></canvas>
+    </div>
+    <div class="minimap">
+      <canvas ref="miniMapCanvas"></canvas>
+      <canvas ref="miniMapFog" class="minimap-fog"></canvas>
+    </div>
+  </div>
+</template>
 
 <style scoped>
 .main-view {
   display: flex;
   gap: 20px;
+  position: relative;
+  width: 100dvw;
+  height: 100dvh;
 }
-.main-camera canvas {
-  border: 2px solid #333;
+
+.pattern-toggle {
+  position: absolute;
+  left: 20px;
+  top: 20px;
+  z-index: 10;
 }
+.pattern-toggle button {
+  font-size: 1rem;
+  padding: 0.5em 1em;
+  border-radius: 6px;
+  border: none;
+  background: #333;
+  color: #fff;
+  cursor: pointer;
+}
+
+.settings-panel {
+  position: absolute;
+  left: 20px;
+  top: 70px;
+  z-index: 10;
+  background: #222;
+  color: #fff;
+  padding: 1em;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+}
+.settings-panel label {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  font-size: 0.95em;
+}
+.settings-panel input[type='range'] {
+  flex: 1;
+}
+
 .minimap {
   position: relative;
 }
 .minimap canvas {
-  border: 2px solid #666;
+  position: absolute;
 }
 .minimap-fog {
   position: absolute;
