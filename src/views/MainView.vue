@@ -18,7 +18,6 @@ const mainCanvas = ref(null)
 const miniMapCanvas = ref(null)
 const miniMapFog = ref(null)
 
-// Setup minimap fog canvas after DOM is ready
 onMounted(() => {
   const fogCtx = miniMapFog.value.getContext('2d')
   miniMapFog.value.width = 300
@@ -29,7 +28,6 @@ onMounted(() => {
   const FIELD_SIZE = 40
 
   function worldToMiniMap(x, z) {
-    // Converts world coordinates to minimap pixel coordinates
     return [((x + FIELD_SIZE / 2) / FIELD_SIZE) * 300, ((z + FIELD_SIZE / 2) / FIELD_SIZE) * 300]
   }
 
@@ -50,17 +48,12 @@ onMounted(() => {
   const wallMaterial = new THREE.MeshPhongMaterial({ color: 0x444444 })
 
   const walls = [
-    // North wall
     new THREE.Mesh(new THREE.BoxGeometry(FIELD_SIZE, wallHeight, wallThickness), wallMaterial),
-    // South wall
     new THREE.Mesh(new THREE.BoxGeometry(FIELD_SIZE, wallHeight, wallThickness), wallMaterial),
-    // East wall
     new THREE.Mesh(new THREE.BoxGeometry(wallThickness, wallHeight, FIELD_SIZE), wallMaterial),
-    // West wall
     new THREE.Mesh(new THREE.BoxGeometry(wallThickness, wallHeight, FIELD_SIZE), wallMaterial),
   ]
 
-  // Position walls
   walls[0].position.set(0, wallHeight / 2, -FIELD_SIZE / 2) // North
   walls[1].position.set(0, wallHeight / 2, FIELD_SIZE / 2) // South
   walls[2].position.set(FIELD_SIZE / 2, wallHeight / 2, 0) // East
@@ -76,7 +69,7 @@ onMounted(() => {
   mainScene.add(dirLight)
 
   // Robot (RC car)
-  const robotGeometry = new THREE.BoxGeometry(1, 0.5, 2)
+  const robotGeometry = new THREE.BoxGeometry(1, 0.3, 1.5)
   const robotMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 })
   const robot = new THREE.Mesh(robotGeometry, robotMaterial)
   robot.position.set(0, 0.25, 0)
@@ -88,7 +81,6 @@ onMounted(() => {
   let heat = new THREE.Mesh(heatGeometry, heatMaterial)
   mainScene.add(heat)
 
-  // Function to place heat signature at random location
   function placeHeatSignature() {
     const x = (Math.random() - 0.5) * 16
     const z = (Math.random() - 0.5) * 16
@@ -117,22 +109,20 @@ onMounted(() => {
   let targetReached = false
   const speed = 0.05
   let heatDetected = false
-  let seekingHeat = false // Add this at the top with your other flags
+  let seekingHeat = false
 
-  // --- Add these at the top of onMounted ---
-  const GRID_SIZE = 40 // Number of cells per side
+  // Grid for pathfinding
+  const GRID_SIZE = 40
   const CELL_SIZE = FIELD_SIZE / GRID_SIZE
-  let grid = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(0)) // 0 = free, 1 = wall
+  let grid = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(0))
 
-  // Mark walls in grid
   for (let i = 0; i < GRID_SIZE; i++) {
-    grid[0][i] = 1 // North
-    grid[GRID_SIZE - 1][i] = 1 // South
-    grid[i][0] = 1 // West
-    grid[i][GRID_SIZE - 1] = 1 // East
+    grid[0][i] = 1
+    grid[GRID_SIZE - 1][i] = 1
+    grid[i][0] = 1
+    grid[i][GRID_SIZE - 1] = 1
   }
 
-  // --- A* Pathfinding ---
   function heuristic(a, b) {
     return Math.abs(a.x - b.x) + Math.abs(a.y - b.y)
   }
@@ -147,9 +137,8 @@ onMounted(() => {
 
     while (open.length) {
       open.sort((a, b) => fScore[key(a)] - fScore[key(b)])
-      const current = open.shift()
+      let current = open.shift()
       if (current.x === goal.x && current.y === goal.y) {
-        // Reconstruct path
         let path = [current]
         while (cameFrom[key(current)]) {
           current = cameFrom[key(current)]
@@ -183,10 +172,9 @@ onMounted(() => {
         }
       }
     }
-    return null // No path
+    return null
   }
 
-  // --- Helper: World <-> Grid ---
   function worldToGrid(x, z) {
     return {
       x: Math.floor(((x + FIELD_SIZE / 2) / FIELD_SIZE) * GRID_SIZE),
@@ -200,21 +188,34 @@ onMounted(() => {
     }
   }
 
+  // --- Check if fog is cleared ---
+  function isFogCleared() {
+    const fogData = miniMapFog.value.getContext('2d').getImageData(0, 0, 300, 300).data
+    for (let i = 3; i < fogData.length; i += 4) {
+      if (fogData[i] > 0) return false
+    }
+    return true
+  }
+
+  // Lawnmower exploration state
+  let exploring = true
+  let mowDirection = 1 // 1 = forward, -1 = backward
+  let mowRow = 0
+  const mowStep = 0.08
+  const mowSpacing = 2
+
   // Animation loop
 
   let lidarAngle = 0
   let path = []
   let pathIndex = 0
-  let scanAngle = 0
-  let exploring = true
-  let exploreMoveTimer = 0
 
   function animate() {
     requestAnimationFrame(animate)
 
     // --- LiDAR simulation: forward-facing cone ---
     lidarGroup.clear()
-    const lidarRadius = 3
+    const lidarRadius = 5
     heatDetected = false // Reset before LiDAR scan
 
     const fov = Math.PI / 3 // 60 degrees in radians
@@ -233,17 +234,44 @@ onMounted(() => {
       point.position.set(x, 0.1, z)
       lidarGroup.add(point)
 
+      const [rx, rz] = worldToMiniMap(robot.position.x, robot.position.z)
       const [mx, mz] = worldToMiniMap(x, z)
-      fogCtx.save()
-      fogCtx.globalCompositeOperation = 'destination-out'
-      fogCtx.beginPath()
-      fogCtx.arc(mx, mz, 10, 0, 2 * Math.PI)
-      fogCtx.fill()
-      fogCtx.restore()
+      const steps = 30 // More steps = smoother line
+
+      for (let s = 0; s <= steps; s++) {
+        const px = rx + (mx - rx) * (s / steps)
+        const pz = rz + (mz - rz) * (s / steps)
+        fogCtx.save()
+        fogCtx.globalCompositeOperation = 'destination-out'
+        fogCtx.beginPath()
+        fogCtx.arc(px, pz, 10, 0, 2 * Math.PI)
+        fogCtx.fill()
+        fogCtx.restore()
+      }
 
       // --- Heat detection logic ---
       const distToHeat = Math.hypot(x - heat.position.x, z - heat.position.z)
       if (distToHeat < 0.6) {
+        heatDetected = true
+      }
+    }
+
+    // --- Improved heat detection: check if heat is inside the cone ---
+    const toHeat = new THREE.Vector3(
+      heat.position.x - robot.position.x,
+      0,
+      heat.position.z - robot.position.z,
+    )
+    const distToHeat = toHeat.length()
+    if (distToHeat < lidarRadius) {
+      // Robot's forward vector
+      const forward = new THREE.Vector3(Math.sin(robotYaw), 0, Math.cos(robotYaw))
+      toHeat.normalize()
+      const dot = forward.dot(toHeat)
+      // Clamp dot to avoid NaN from acos
+      const clampedDot = Math.max(-1, Math.min(1, dot))
+      const angleToHeat = Math.acos(clampedDot)
+      if (angleToHeat < fov / 2) {
         heatDetected = true
       }
     }
@@ -301,9 +329,38 @@ onMounted(() => {
           path = []
         }
       }
+    } else if (exploring) {
+      // --- Lawnmower (zigzag) pattern for exploration ---
+      const minX = -FIELD_SIZE / 2 + 1
+      const maxX = FIELD_SIZE / 2 - 1
+      const minZ = -FIELD_SIZE / 2 + 1
+      const maxZ = FIELD_SIZE / 2 - 1
+
+      // Calculate target X for this row
+      const targetX = minX + mowRow * mowSpacing
+
+      // Move in Z (forward/back) until near wall, then shift row
+      let nextZ = robot.position.z + mowDirection * mowStep
+      if ((mowDirection === 1 && nextZ > maxZ) || (mowDirection === -1 && nextZ < minZ)) {
+        mowRow++
+        if (targetX > maxX) {
+          exploring = false // Finished all rows
+        } else {
+          mowDirection *= -1
+          robot.position.x = targetX
+          robot.position.z = mowDirection === 1 ? minZ : maxZ
+        }
+      } else {
+        robot.position.z = nextZ
+      }
+      robot.rotation.y = mowDirection === 1 ? 0 : Math.PI
     } else {
-      // If not detected, rotate in place to scan
-      robot.rotation.y += 0.03
+      // Idle: stop moving
+    }
+
+    // --- Stop exploring if fog is cleared ---
+    if (exploring && isFogCleared()) {
+      exploring = false
     }
 
     // --- First-person camera: attach to robot ---
@@ -318,32 +375,6 @@ onMounted(() => {
 
     mainRenderer.render(mainScene, mainCamera)
     miniRenderer.render(mainScene, miniCamera)
-
-    // Draw the field of view cone and robot dot on the fog overlay (2D canvas)
-    const overlayCtx = miniMapFog.value.getContext('2d')
-    overlayCtx.clearRect(0, 0, 300, 300)
-
-    // Robot position in minimap coordinates
-    const [rx, rz] = worldToMiniMap(robot.position.x, robot.position.z)
-
-    // Draw FOV cone
-    overlayCtx.save()
-    overlayCtx.translate(rx, rz)
-    overlayCtx.rotate(-robot.rotation.y)
-    overlayCtx.beginPath()
-    overlayCtx.moveTo(0, 0)
-    const lidarRadiusPx = (3 / FIELD_SIZE) * 300
-    overlayCtx.arc(0, 0, lidarRadiusPx, -fov / 2, fov / 2)
-    overlayCtx.closePath()
-    overlayCtx.fillStyle = 'rgba(0, 255, 255, 0.15)'
-    overlayCtx.fill()
-    overlayCtx.restore()
-
-    // Draw the robot as a dot
-    overlayCtx.beginPath()
-    overlayCtx.arc(rx, rz, 5, 0, 2 * Math.PI)
-    overlayCtx.fillStyle = '#ff0000'
-    overlayCtx.fill()
   }
   animate()
 })
