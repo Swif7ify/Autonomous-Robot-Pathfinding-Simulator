@@ -2,7 +2,7 @@ import { ref, onMounted, watch } from 'vue'
 import * as THREE from 'three'
 
 export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
-  // Pattern and mode state
+  // Patterns
   const patterns = ['lawnmower', 'spiral', 'random']
   const currentPattern = ref('lawnmower')
   const modes = ['auto', 'manual']
@@ -11,14 +11,14 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
   function togglePattern() {
     const idx = patterns.indexOf(currentPattern.value)
     currentPattern.value = patterns[(idx + 1) % patterns.length]
-    if (robot) robot.spiral = null // Reset spiral state so it starts from new position
+    if (robot) robot.spiral = null 
   }
   function toggleMode() {
     const idx = modes.indexOf(currentMode.value)
     currentMode.value = modes[(idx + 1) % modes.length]
   }
 
-  // LiDAR settings
+  // Lidar settings
   const lidarRadius = ref(10)
   const lidarNumRays = ref(36)
   const lidarFov = ref(Math.PI / 3)
@@ -39,12 +39,12 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
   let robot = null
 
-  // Texture loader and references
+  // Texture loader
   let wallTexture, heatTexture, skyTexture, groundTexture
   let wallMeshes = []
   let heatMesh = null
   let mainScene = null
-  let field = null // This is your ground mesh
+  let field = null 
 
   function applyMaterials() {
     // Walls
@@ -70,7 +70,6 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
         mainScene.background = new THREE.Color(0x222222)
       }
     }
-    // Car: always solid color, never assign .map
   }
 
   watch(texturesEnabled, () => {
@@ -90,7 +89,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
       return [((x + FIELD_SIZE / 2) / FIELD_SIZE) * 300, ((z + FIELD_SIZE / 2) / FIELD_SIZE) * 300]
     }
 
-    // --- Load textures ---
+    // Load textures
     const textureLoader = new THREE.TextureLoader()
     wallTexture = textureLoader.load('/assets/wall.jpg', applyMaterials)
     heatTexture = textureLoader.load('/assets/heat.jpg', applyMaterials)
@@ -101,14 +100,14 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     mainScene = new THREE.Scene()
     mainScene.background = new THREE.Color(0x222222)
 
-    // Field (plane) - always green, no texture
+    // Field
     const fieldGeometry = new THREE.PlaneGeometry(FIELD_SIZE, FIELD_SIZE)
     const fieldMaterial = new THREE.MeshPhongMaterial({ color: 0x228b22 })
     field = new THREE.Mesh(fieldGeometry, fieldMaterial)
     field.rotation.x = -Math.PI / 2
     mainScene.add(field)
 
-    // Walls (simple boxes)
+    // Walls
     const wallHeight = 2
     const wallThickness = 0.5
     const wallMaterial = new THREE.MeshPhongMaterial({ color: 0x444444 })
@@ -134,18 +133,16 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     dirLight.position.set(10, 20, 10)
     mainScene.add(dirLight)
 
-    // Robot (RC car) - always red, no texture
+    // Robot 
     const robotGeometry = new THREE.BoxGeometry(1, 0.3, 1.5)
     const robotMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 })
     robot = new THREE.Mesh(robotGeometry, robotMaterial)
-    // Do NOT assign carMesh or update its material in applyMaterials
-    // Spawn robot at a random location within the field (avoid walls)
     const robotX = (Math.random() - 0.5) * (FIELD_SIZE - 2)
     const robotZ = (Math.random() - 0.5) * (FIELD_SIZE - 2)
     robot.position.set(robotX, 0.25, robotZ)
     mainScene.add(robot)
 
-    // "Thermal" target (heat signature)
+    // "Thermal" target
     const heatGeometry = new THREE.SphereGeometry(0.5, 32, 32)
     const heatMaterial = new THREE.MeshPhongMaterial({ color: 0xffa500, emissive: 0xff6600 })
     let heat = new THREE.Mesh(heatGeometry, heatMaterial)
@@ -159,11 +156,11 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     }
     placeHeatSignature()
 
-    // LiDAR points (simulate a rotating scan)
+    // Lidar points
     const lidarGroup = new THREE.Group()
     mainScene.add(lidarGroup)
 
-    // Main Camera (First-person)
+    // Main Camera
     const mainRenderer = new THREE.WebGLRenderer({ canvas: mainCanvas.value })
     mainRenderer.setSize(window.innerWidth, window.innerHeight)
     const mainCamera = new THREE.PerspectiveCamera(
@@ -178,7 +175,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
       mainCamera.updateProjectionMatrix()
     })
 
-    // Minimap (Top-down)
+    // Minimap 
     const miniRenderer = new THREE.WebGLRenderer({ canvas: miniMapCanvas.value })
     miniRenderer.setSize(300, 300)
     const miniCamera = new THREE.OrthographicCamera(
@@ -276,7 +273,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
       }
     }
 
-    // --- Check if fog is cleared ---
+    // Check if fog is cleared
     function isFogCleared() {
       const fogData = miniMapFog.value.getContext('2d').getImageData(0, 0, 300, 300).data
       for (let i = 3; i < fogData.length; i += 4) {
@@ -287,12 +284,12 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
     // Lawnmower exploration state
     let exploring = true
-    let mowDirection = 1 // 1 = forward, -1 = backward
+    let mowDirection = 1 
     let mowRow = 0
     const mowStep = 0.08
     const mowSpacing = 2
 
-    // --- Smooth movement variables for lawmmower ---
+    // Smooth movement variables for lawmmower
     let moveTarget = null
     const moveSpeed = 0.12
 
@@ -315,7 +312,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     let path = []
     let pathIndex = 0
 
-    // --- Keyboard controls for manual mode ---
+    // Keyboard controls for manual mode
     window.addEventListener('keydown', (e) => {
       if (currentMode.value !== 'manual') return
       if (e.key === 'w' || e.key === 'ArrowUp') manualControl.forward = true
@@ -334,7 +331,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     function animate() {
       requestAnimationFrame(animate)
 
-      // --- Manual mode movement ---
+      // Manual mode movement
       if (currentMode.value === 'manual') {
         let move = false
         let angle = robot.rotation.y
@@ -362,25 +359,22 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
             robot.position.z = nextZ
           }
         }
-        // --- Manual mode: collect/interact with heat object ---
+        // Manual mode: collect/interact with heat object 
         const distToHeat = Math.hypot(
           robot.position.x - heat.position.x,
           robot.position.z - heat.position.z,
         )
         if (distToHeat < 1.0) {
           placeHeatSignature()
-          // Reset spiral state so next spiral starts from current position
           if (robot) robot.spiral = null
         }
       } else {
-        // --- Smooth movement handler for lawmmower ---
+        // Smooth movement handler for lawmmower
         if (moveTarget) {
           const dx = moveTarget.x - robot.position.x
           const dz = moveTarget.z - robot.position.z
           const dist = Math.hypot(dx, dz)
-          // Detect if this is a horizontal move (X changes, Z stays the same)
           const isHorizontal = Math.abs(dx) > Math.abs(dz)
-          // Set rotation to match direction of movement for the whole move
           if (isHorizontal) {
             robot.rotation.y = dx > 0 ? Math.PI / 2 : -Math.PI / 2
           } else {
@@ -399,12 +393,12 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
         }
       }
 
-      // --- LiDAR simulation: forward-facing cone (ALWAYS RUN) ---
+      // Lidar simulation: forward-facing cone (ALWAYS RUN) 
       lidarGroup.clear()
       const fov = lidarFov.value
       const numRays = lidarNumRays.value
       const lidarRadiusValue = lidarRadius.value
-      heatDetected = false // Reset before LiDAR scan
+      heatDetected = false
 
       const robotYaw = robot.rotation.y
 
@@ -414,7 +408,6 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
         let lastX = robot.position.x
         let lastZ = robot.position.z
 
-        // Step along the ray in small increments
         for (let r = 0; r <= lidarRadiusValue; r += 0.1) {
           const x = robot.position.x + Math.sin(angle) * r
           const z = robot.position.z + Math.cos(angle) * r
@@ -437,21 +430,21 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
           lastZ = z
         }
 
-        // Draw the LiDAR point at the last visible position
+        // Draw Lidar point at the last visible position
         const pointGeometry = new THREE.SphereGeometry(0.05, 8, 8)
         const pointMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff })
         const point = new THREE.Mesh(pointGeometry, pointMaterial)
         point.position.set(lastX, 0.1, lastZ)
         lidarGroup.add(point)
 
-        // --- Heat detection logic ---
+        // Heat detection logic
         const distToHeat = Math.hypot(lastX - heat.position.x, lastZ - heat.position.z)
         if (distToHeat < 0.6) {
           heatDetected = true
         }
       }
 
-      // --- Improved heat detection: check if heat is inside the cone ---
+      // check if heat is inside the cone 
       const toHeat = new THREE.Vector3(
         heat.position.x - robot.position.x,
         0,
@@ -459,11 +452,9 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
       )
       const distToHeat = toHeat.length()
       if (distToHeat < lidarRadiusValue) {
-        // Robot's forward vector
         const forward = new THREE.Vector3(Math.sin(robotYaw), 0, Math.cos(robotYaw))
         toHeat.normalize()
         const dot = forward.dot(toHeat)
-        // Clamp dot to avoid NaN from acos
         const clampedDot = Math.max(-1, Math.min(1, dot))
         const angleToHeat = Math.acos(clampedDot)
         if (angleToHeat < fov / 2) {
@@ -472,9 +463,9 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
       }
       lidarAngle += 0.03
 
-      // --- Only run pathfinding/exploration in auto mode ---
+      // Only run pathfinding/exploration in auto mode
       if (currentMode.value !== 'manual') {
-        // --- Pathfinding: Move robot toward heat signature if detected ---
+        // Move robot toward heat signature if detected ---
         if (heatDetected) {
           seekingHeat = true // Start seeking if detected
         }
@@ -496,12 +487,10 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
             targetReached = true
             seekingHeat = false // Reset seeking for new target
             heatDetected = false
-            // Reset spiral state so next spiral starts from current position
             if (robot) robot.spiral = null
           }
         } else if (heatDetected && !seekingHeat) {
           seekingHeat = true
-          // Compute path using A*
           const start = worldToGrid(robot.position.x, robot.position.z)
           const goal = worldToGrid(heat.position.x, heat.position.z)
           path = astar(start, goal, grid) || []
@@ -526,14 +515,13 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
               seekingHeat = false
               heatDetected = false
               path = []
-              // Reset spiral state so next spiral starts from current position
               if (robot) robot.spiral = null
             }
           }
         } else if (exploring) {
-          // --- Pattern selection ---
+          // Pattern selection
           if (currentPattern.value === 'lawnmower') {
-            // --- Lawnmower (zigzag) pattern for exploration ---
+            // Lawnmower (zigzag) 
             const minX = -FIELD_SIZE / 2 + 1
             const maxX = FIELD_SIZE / 2 - 1
             const minZ = -FIELD_SIZE / 2 + 1
@@ -542,15 +530,13 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
             // Calculate target X for this row
             const targetX = minX + mowRow * mowSpacing
 
-            // --- FIX: If robot is not at leftmost side at start, move left first ---
             if (mowRow === 0 && Math.abs(robot.position.x - minX) > 0.01) {
-              // Set rotation to face left
               robot.rotation.y = -Math.PI / 2
               moveTo(minX, robot.position.z)
               return
             }
 
-            // Check if wall is directly ahead using LiDAR
+            // Check if wall is directly ahead using Lidar
             const nextZ = robot.position.z + mowDirection * mowStep
             const nextX = robot.position.x
             const wallAhead = isWall(nextX, nextZ)
@@ -562,26 +548,23 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
             ) {
               mowRow++
               if (targetX > maxX) {
-                exploring = false // Finished all rows
+                exploring = false
               } else {
                 mowDirection *= -1
-                // Set rotation to face left or right for horizontal move
                 robot.rotation.y = targetX > robot.position.x ? Math.PI / 2 : -Math.PI / 2
                 moveTo(targetX, mowDirection === 1 ? minZ : maxZ)
               }
             } else {
               robot.position.z = nextZ
-              // Set rotation to face up or down the field for vertical move
               robot.rotation.y = mowDirection === 1 ? 0 : Math.PI
             }
           } else if (currentPattern.value === 'spiral') {
-            // --- Spiral pattern ---
+            // Spiral pattern 
             if (
               !robot.spiral ||
               !robot.spiral.center ||
               robot.spiralPatternReset !== currentPattern.value
             ) {
-              // Initialize spiral state at current robot position
               robot.spiral = {
                 angle: 0,
                 radius: 2,
@@ -606,9 +589,8 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
               exploring = false
             }
           } else if (currentPattern.value === 'random') {
-            // --- Random walk pattern ---
+            // Random walk pattern 
             if (!robot.randomWalk || robot.randomWalk.steps <= 0) {
-              // Pick a new random direction
               const angle = Math.random() * Math.PI * 2
               robot.randomWalk = {
                 angle,
@@ -624,12 +606,9 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
               robot.rotation.y = rw.angle
               rw.steps--
             } else {
-              // Pick a new direction if hit wall
               robot.randomWalk.steps = 0
             }
           }
-        } else {
-          // Idle: stop moving
         }
       }
 
@@ -637,7 +616,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     }
 
     function renderCameras() {
-      // --- First-person camera: attach to robot ---
+      //First-person camera: attach to robot 
       const cameraOffset = new THREE.Vector3(0, 0.4, 0)
       const lookDistance = 2
       const forward = new THREE.Vector3(0, 0, 1).applyEuler(robot.rotation).normalize()
