@@ -11,7 +11,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
   function togglePattern() {
     const idx = patterns.indexOf(currentPattern.value)
     currentPattern.value = patterns[(idx + 1) % patterns.length]
-    if (robot) robot.spiral = null 
+    if (robot) robot.spiral = null
   }
   function toggleMode() {
     const idx = modes.indexOf(currentMode.value)
@@ -44,7 +44,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
   let wallMeshes = []
   let heatMesh = null
   let mainScene = null
-  let field = null 
+  let field = null
 
   function applyMaterials() {
     // Walls
@@ -83,7 +83,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     fogCtx.fillStyle = '#111'
     fogCtx.fillRect(0, 0, 300, 300)
 
-    const FIELD_SIZE = 40
+    const FIELD_SIZE = 10
 
     function worldToMiniMap(x, z) {
       return [((x + FIELD_SIZE / 2) / FIELD_SIZE) * 300, ((z + FIELD_SIZE / 2) / FIELD_SIZE) * 300]
@@ -133,7 +133,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     dirLight.position.set(10, 20, 10)
     mainScene.add(dirLight)
 
-    // Robot 
+    // Robot
     const robotGeometry = new THREE.BoxGeometry(1, 0.3, 1.5)
     const robotMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 })
     robot = new THREE.Mesh(robotGeometry, robotMaterial)
@@ -175,7 +175,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
       mainCamera.updateProjectionMatrix()
     })
 
-    // Minimap 
+    // Minimap
     const miniRenderer = new THREE.WebGLRenderer({ canvas: miniMapCanvas.value })
     miniRenderer.setSize(300, 300)
     const miniCamera = new THREE.OrthographicCamera(
@@ -284,7 +284,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
     // Lawnmower exploration state
     let exploring = true
-    let mowDirection = 1 
+    let mowDirection = 1
     let mowRow = 0
     const mowStep = 0.08
     const mowSpacing = 2
@@ -359,7 +359,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
             robot.position.z = nextZ
           }
         }
-        // Manual mode: collect/interact with heat object 
+        // Manual mode: collect/interact with heat object
         const distToHeat = Math.hypot(
           robot.position.x - heat.position.x,
           robot.position.z - heat.position.z,
@@ -393,7 +393,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
         }
       }
 
-      // Lidar simulation: forward-facing cone (ALWAYS RUN) 
+      // Lidar simulation: forward-facing cone (ALWAYS RUN)
       lidarGroup.clear()
       const fov = lidarFov.value
       const numRays = lidarNumRays.value
@@ -444,7 +444,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
         }
       }
 
-      // check if heat is inside the cone 
+      // check if heat is inside the cone
       const toHeat = new THREE.Vector3(
         heat.position.x - robot.position.x,
         0,
@@ -465,9 +465,9 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
       // Only run pathfinding/exploration in auto mode
       if (currentMode.value !== 'manual') {
-        // Move robot toward heat signature if detected ---
+
         if (heatDetected) {
-          seekingHeat = true // Start seeking if detected
+          seekingHeat = true 
         }
 
         if (seekingHeat) {
@@ -485,7 +485,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
           } else if (!targetReached) {
             placeHeatSignature()
             targetReached = true
-            seekingHeat = false // Reset seeking for new target
+            seekingHeat = false 
             heatDetected = false
             if (robot) robot.spiral = null
           }
@@ -521,7 +521,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
         } else if (exploring) {
           // Pattern selection
           if (currentPattern.value === 'lawnmower') {
-            // Lawnmower (zigzag) 
+            // Lawnmower (zigzag)
             const minX = -FIELD_SIZE / 2 + 1
             const maxX = FIELD_SIZE / 2 - 1
             const minZ = -FIELD_SIZE / 2 + 1
@@ -559,7 +559,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
               robot.rotation.y = mowDirection === 1 ? 0 : Math.PI
             }
           } else if (currentPattern.value === 'spiral') {
-            // Spiral pattern 
+            // Spiral pattern
             if (
               !robot.spiral ||
               !robot.spiral.center ||
@@ -589,7 +589,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
               exploring = false
             }
           } else if (currentPattern.value === 'random') {
-            // Random walk pattern 
+            // Random walk pattern
             if (!robot.randomWalk || robot.randomWalk.steps <= 0) {
               const angle = Math.random() * Math.PI * 2
               robot.randomWalk = {
@@ -616,7 +616,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     }
 
     function renderCameras() {
-      //First-person camera: attach to robot 
+      //First-person camera: attach to robot
       const cameraOffset = new THREE.Vector3(0, 0.4, 0)
       const lookDistance = 2
       const forward = new THREE.Vector3(0, 0, 1).applyEuler(robot.rotation).normalize()
