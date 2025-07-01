@@ -12,9 +12,9 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 	const currentPattern = ref("search-grid");
 	const modes = ["auto", "manual", "search-rescue"];
 	const currentMode = ref("auto");
-	const lidarRadius = ref(15);
-	const lidarNumRays = ref(140);
-	const lidarFov = ref(Math.PI / 1.5);
+	const lidarRadius = ref(7);
+	const lidarNumRays = ref(50);
+	const lidarFov = ref(Math.PI / 3);
 	const texturesEnabled = ref(false);
 	const heatDetected = ref(false);
 	const numHeatObjects = ref(4);

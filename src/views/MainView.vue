@@ -36,11 +36,15 @@ const {
 	detectedHeatTypes,
 	heatTypes,
 } = usePathFinder(mainCanvas, miniMapCanvas, miniMapFog);
+
+const settingsCollapsed = ref(false);
+function toggleSettingsPanel() {
+	settingsCollapsed.value = !settingsCollapsed.value;
+}
 </script>
 
 <template>
 	<div class="main-view">
-		<!-- Pattern toggle buttons -->
 		<div class="pattern-toggle">
 			<button @click="togglePattern">
 				Pattern: {{ currentPattern }}
@@ -50,155 +54,167 @@ const {
 		</div>
 
 		<div class="settings-panel">
-			<!-- Camera Settings -->
-			<div class="settings-group">
-				<h3>Camera Settings</h3>
-				<label>
-					<input type="checkbox" v-model="advancedHeatSearch" />
-					Advanced Heat Search (X-Ray Vision)
-				</label>
-			</div>
-
-			<!-- LiDAR Settings -->
-			<div class="settings-group">
-				<h3>LiDAR Settings</h3>
-				<label>
-					Radius:
-					<input
-						type="range"
-						min="2"
-						max="25"
-						step="0.5"
-						v-model.number="lidarRadius"
-					/>
-					{{ lidarRadius }}m
-				</label>
-				<label>
-					Rays:
-					<input
-						type="range"
-						min="8"
-						max="180"
-						step="4"
-						v-model.number="lidarNumRays"
-					/>
-					{{ lidarNumRays }}
-				</label>
-				<label>
-					FOV:
-					<input
-						type="range"
-						min="0.2"
-						max="3.14"
-						step="0.01"
-						v-model.number="lidarFov"
-					/>
-					{{ ((lidarFov * 180) / Math.PI).toFixed(0) }}°
-				</label>
-			</div>
-
-			<!-- Environment Settings -->
-			<div class="settings-group">
-				<h3>Environment</h3>
-				<label>
-					Field Size:
-					<span class="field-controls">
-						<button
-							@click="decreaseFieldSize"
-							:disabled="fieldSize <= 20"
-						>
-							-
-						</button>
-						<span>{{ fieldSize }}m</span>
-						<button @click="increaseFieldSize">+</button>
-					</span>
-				</label>
-				<label>
-					Obstacles:
-					<input
-						type="range"
-						min="0"
-						max="10"
-						step="1"
-						v-model.number="numObstacles"
-					/>
-					{{ numObstacles }}
-				</label>
-				<button @click="spawnMoreObstacles" class="spawn-btn">
-					Respawn Obstacles
-				</button>
-				<label>
-					<input type="checkbox" v-model="texturesEnabled" />
-					Textures
-				</label>
-			</div>
-
-			<!-- Heat Detection -->
-			<div class="settings-group">
-				<h3>Heat Detection</h3>
-				<label>
-					Heat Objects:
-					<input
-						type="range"
-						min="0"
-						max="15"
-						step="1"
-						v-model.number="numHeatObjects"
-					/>
-					{{ numHeatObjects }}
-				</label>
-				<button @click="spawnMoreHeat" class="spawn-btn">
-					Respawn Heat Objects
-				</button>
-
-				<div class="heat-status" :class="{ detected: heatDetected }">
-					Heat Detected: {{ heatDetected ? "YES" : "NO" }}
+			<button class="collapse-btn" @click="toggleSettingsPanel">
+				{{
+					settingsCollapsed ? "▶ Show Settings" : "◀ Hide Settings"
+				}}
+			</button>
+			<div v-show="!settingsCollapsed">
+				<div class="settings-group">
+					<h3>Camera Settings</h3>
+					<label>
+						<input type="checkbox" v-model="advancedHeatSearch" />
+						Advanced Heat Search (X-Ray Vision)
+					</label>
 				</div>
 
-				<div
-					v-if="detectedHeatTypes.length > 0"
-					class="detected-heat-types"
-				>
-					<h4>Detected Heat Signatures:</h4>
+				<!-- LiDAR Settings -->
+				<div class="settings-group">
+					<h3>LiDAR Settings</h3>
+					<label>
+						Radius:
+						<input
+							type="range"
+							min="2"
+							max="25"
+							step="0.5"
+							v-model.number="lidarRadius"
+						/>
+						{{ lidarRadius }}m
+					</label>
+					<label>
+						Rays:
+						<input
+							type="range"
+							min="8"
+							max="180"
+							step="4"
+							v-model.number="lidarNumRays"
+						/>
+						{{ lidarNumRays }}
+					</label>
+					<label>
+						FOV:
+						<input
+							type="range"
+							min="0.2"
+							max="3.14"
+							step="0.01"
+							v-model.number="lidarFov"
+						/>
+						{{ ((lidarFov * 180) / Math.PI).toFixed(0) }}°
+					</label>
+				</div>
+
+				<!-- Environment Settings -->
+				<div class="settings-group">
+					<h3>Environment</h3>
+					<label>
+						Field Size:
+						<span class="field-controls">
+							<button
+								@click="decreaseFieldSize"
+								:disabled="fieldSize <= 20"
+							>
+								-
+							</button>
+							<span>{{ fieldSize }}m</span>
+							<button @click="increaseFieldSize">+</button>
+						</span>
+					</label>
+					<label>
+						Obstacles:
+						<input
+							type="range"
+							min="0"
+							max="10"
+							step="1"
+							v-model.number="numObstacles"
+						/>
+						{{ numObstacles }}
+					</label>
+					<button @click="spawnMoreObstacles" class="spawn-btn">
+						Respawn Obstacles
+					</button>
+					<label>
+						<input type="checkbox" v-model="texturesEnabled" />
+						Textures
+					</label>
+				</div>
+
+				<!-- Heat Detection -->
+				<div class="settings-group">
+					<h3>Heat Detection</h3>
+					<label>
+						Heat Objects:
+						<input
+							type="range"
+							min="0"
+							max="15"
+							step="1"
+							v-model.number="numHeatObjects"
+						/>
+						{{ numHeatObjects }}
+					</label>
+					<button @click="spawnMoreHeat" class="spawn-btn">
+						Respawn Heat Objects
+					</button>
+
 					<div
-						v-for="heatType in detectedHeatTypes"
-						:key="heatType"
-						class="heat-type"
+						class="heat-status"
+						:class="{ detected: heatDetected }"
 					>
-						{{ heatType }}
+						Heat Detected: {{ heatDetected ? "YES" : "NO" }}
+					</div>
+
+					<div
+						v-if="detectedHeatTypes.length > 0"
+						class="detected-heat-types"
+					>
+						<h4>Detected Heat Signatures:</h4>
+						<div
+							v-for="heatType in detectedHeatTypes"
+							:key="heatType"
+							class="heat-type"
+						>
+							{{ heatType }}
+						</div>
 					</div>
 				</div>
-			</div>
 
-			<!-- Robot Settings -->
-			<div class="settings-group">
-				<h3>Robot Settings</h3>
-				<label>
-					Speed:
-					<input
-						type="range"
-						min="0.02"
-						max="1"
-						step="0.01"
-						v-model.number="robotSpeed"
-					/>
-					{{ robotSpeed.toFixed(2) }}
-				</label>
-			</div>
+				<!-- Robot Settings -->
+				<div class="settings-group">
+					<h3>Robot Settings</h3>
+					<label>
+						Speed:
+						<input
+							type="range"
+							min="0.02"
+							max="1"
+							step="0.01"
+							v-model.number="robotSpeed"
+						/>
+						{{ robotSpeed.toFixed(2) }}
+					</label>
+				</div>
 
-			<!-- Controls -->
-			<div class="settings-group">
-				<h3>Controls</h3>
-				<button @click="resetSimulation" class="reset-btn">
-					Reset Simulation
-				</button>
-				<div class="manual-controls" v-if="currentMode === 'manual'">
-					<p>Manual Controls:</p>
-					<div class="key-hints">
-						<span>W/↑ - Forward</span>
-						<span>S/↓ - Backward</span>
-						<span>A/← - Turn Left</span>
-						<span>D/→ - Turn Right</span>
+				<!-- Controls -->
+				<div class="settings-group">
+					<h3>Controls</h3>
+					<button @click="resetSimulation" class="reset-btn">
+						Reset Simulation
+					</button>
+					<div
+						class="manual-controls"
+						v-if="currentMode === 'manual'"
+					>
+						<p>Manual Controls:</p>
+						<div class="key-hints">
+							<span>W/↑ - Forward</span>
+							<span>S/↓ - Backward</span>
+							<span>A/← - Turn Left</span>
+							<span>D/→ - Turn Right</span>
+						</div>
 					</div>
 				</div>
 			</div>
@@ -259,6 +275,30 @@ const {
 	max-height: calc(100vh - 120px);
 	overflow-y: auto;
 	width: 280px;
+	transition:
+		width 0.2s,
+		padding 0.2s;
+}
+
+.settings-panel.collapsed {
+	width: 48px;
+	padding: 0.5em 0.2em;
+	overflow: visible;
+}
+.collapse-btn {
+	width: 100%;
+	margin-bottom: 0.5em;
+	background: #111;
+	color: #fff;
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 0.95em;
+	padding: 0.3em 0.2em;
+	transition: background 0.2s;
+}
+.collapse-btn:hover {
+	background: #333;
 }
 
 .settings-group {
@@ -438,7 +478,6 @@ const {
 	pointer-events: none;
 }
 
-/* Scrollbar styling for settings panel */
 .settings-panel::-webkit-scrollbar {
 	width: 6px;
 }
