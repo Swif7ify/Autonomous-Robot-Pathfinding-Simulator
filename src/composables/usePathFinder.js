@@ -2,6 +2,7 @@ import { ref, onMounted, watch } from "vue";
 import * as THREE from "three";
 
 export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
+	// State and config
 	const fieldSize = ref(40);
 	const patterns = [
 		"search-grid",
@@ -19,8 +20,6 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 	const heatDetected = ref(false);
 	const numHeatObjects = ref(4);
 	const robotSpeed = ref(0.15);
-
-	// Advanced features
 	const cameraMode = ref("first-person");
 	const advancedHeatSearch = ref(false);
 	const numObstacles = ref(4);
@@ -29,6 +28,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 	const targetsFound = ref(0);
 	const areaSearched = ref(0);
 
+	// Heat object types
 	const heatTypes = [
 		{
 			name: "Human Survivor",
@@ -52,7 +52,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			emissive: 0xff6600,
 			temp: 200,
 			size: 1.0,
-			priority: 3,
+			priority: null,
 		},
 		{
 			name: "Vehicle Heat",
@@ -60,7 +60,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			emissive: 0xff4400,
 			temp: 85,
 			size: 0.9,
-			priority: 4,
+			priority: null,
 		},
 		{
 			name: "Electronic Device",
@@ -68,10 +68,11 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			emissive: 0xffaa00,
 			temp: 45,
 			size: 0.5,
-			priority: 5,
+			priority: null,
 		},
 	];
 
+	// Control and scene objects
 	let manualControl = {
 		forward: false,
 		backward: false,
@@ -89,6 +90,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 	let mainRenderer, mainCamera, miniRenderer, miniCamera, lidarGroup;
 	let animationId = null;
 
+	// Navigation and search state
 	let exploring = true;
 	let mowDirection = 1;
 	let mowRow = 0;
@@ -104,20 +106,32 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 	let lastPosition = { x: 0, z: 0 };
 	let stuckTimer = 0;
 	let emergencyManeuver = false;
-
-	// heat response system**
+	let modeSpecificSpeed = 1;
+	let heatScanIntensity = 1;
+	let explorationPriority = "thorough";
 	let priorityTarget = null;
 	let targetLockOn = false;
 	let heatDetectionRange = 20;
 	let lastHeatScanTime = 0;
-
-	// LiDAR coverage**
 	let rotationSearchMode = false;
 	let rotationTarget = 0;
 	let noPathTimer = 0;
 	let lastRotationTime = 0;
+	let gridSearchState = {
+		currentRow: 0,
+		currentCol: 0,
+		direction: "right",
+		gridSize: 4,
+		rowCompleted: false,
+	};
+	let perimeterState = {
+		phase: "outer",
+		currentSide: 0,
+		progress: 0,
+		radius: 18,
+	};
 
-	// Optimized geometries
+	// Geometry/materials for rendering
 	let lidarPointGeometry = new THREE.SphereGeometry(0.06, 8, 8);
 	let heatPointGeometry = new THREE.SphereGeometry(0.12, 8, 8);
 	let lidarPointMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff });
@@ -128,16 +142,16 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 	let heatPointMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 	let priorityHeatMaterial = new THREE.MeshBasicMaterial({ color: 0xff00ff });
 
-	// Performance optimization
+	// Timers and cooldowns
 	let heatDetectionCooldown = 0;
 	let lastHeatDetectionTime = 0;
 
-	// responsive movement**
+	// Movement targets
 	let targetPosition = { x: 0, z: 0 };
 	let targetRotation = 0;
 	let smoothingFactor = 0.25;
 
-	// Multi-layer navigation system**
+	// LiDAR scan data
 	let lidarData = {
 		clearDirections: [],
 		blockedDirections: [],
@@ -147,7 +161,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		humanDetections: [],
 	};
 
-	// Mission planning
+	// Mission plan
 	let missionData = {
 		searchPattern: null,
 		waypoints: [],
@@ -156,6 +170,10 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		rescueTargets: [],
 		completedAreas: new Set(),
 	};
+
+	// Fog clearing
+	let fogClearingRadius = 15;
+	let lastFogClearTime = 0;
 
 	// Toggle Functions
 	function togglePattern() {
@@ -169,7 +187,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		const idx = modes.indexOf(currentMode.value);
 		currentMode.value = modes[(idx + 1) % modes.length];
 
-		// manual override
+		// Set mode-specific behaviors
 		if (currentMode.value === "manual") {
 			seekingHeat = false;
 			exploring = false;
@@ -179,11 +197,29 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			priorityTarget = null;
 			rotationSearchMode = false;
 			missionStatus.value = "MANUAL CONTROL";
-		} else {
+		} else if (currentMode.value === "auto") {
+			// AUTO MODE
 			exploring = true;
-			missionStatus.value = "SEARCHING";
-			generateMissionPlan();
+			modeSpecificSpeed = 1;
+			heatScanIntensity = 1;
+			explorationPriority = "thorough";
+			fogClearingRadius = 15;
+			robotSpeed.value = 0.15;
+			missionStatus.value = "AUTO MODE - SYSTEMATIC EXPLORATION";
+		} else if (currentMode.value === "search-rescue") {
+			// SEARCH-RESCUE MODE
+			exploring = true;
+			modeSpecificSpeed = 2;
+			heatScanIntensity = 3;
+			explorationPriority = "fast";
+			heatDetectionRange = 30; // Much increased range
+			fogClearingRadius = 25; // Larger fog clearing
+			robotSpeed.value = 0.25; // Faster base speed
+			missionStatus.value =
+				"SEARCH-RESCUE MODE - PRIORITY HEAT DETECTION";
 		}
+
+		generateMissionPlan();
 	}
 
 	function toggleTextures() {
@@ -201,36 +237,148 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		advancedHeatSearch.value = !advancedHeatSearch.value;
 	}
 
+	// Pattern-specific mission generation
 	function generateMissionPlan() {
 		const fs = fieldSize.value;
 		missionData.waypoints = [];
 		searchGrid = [];
 
+		// Reset pattern states
+		gridSearchState = {
+			currentRow: 0,
+			currentCol: 0,
+			direction: "right",
+			gridSize: currentMode.value === "search-rescue" ? 3 : 5, // Smaller grid for rescue mode
+			rowCompleted: false,
+		};
+
+		perimeterState = {
+			phase: "outer",
+			currentSide: 0,
+			progress: 0,
+			radius: Math.floor(fs / 2) - 3,
+		};
+
 		if (currentPattern.value === "search-grid") {
-			const gridSize = 5;
-			for (let x = -fs / 2 + 3; x < fs / 2 - 3; x += gridSize) {
-				for (let z = -fs / 2 + 3; z < fs / 2 - 3; z += gridSize) {
+			// TRUE GRID: Methodical row-by-row coverage
+			const gridSize = gridSearchState.gridSize;
+			const startX = -fs / 2 + gridSize;
+			const startZ = -fs / 2 + gridSize;
+			const endX = fs / 2 - gridSize;
+			const endZ = fs / 2 - gridSize;
+
+			// Generate grid points in row-by-row order
+			for (
+				let row = 0;
+				row <= Math.floor((endZ - startZ) / gridSize);
+				row++
+			) {
+				const rowPoints = [];
+				for (
+					let col = 0;
+					col <= Math.floor((endX - startX) / gridSize);
+					col++
+				) {
+					const x = startX + col * gridSize;
+					const z = startZ + row * gridSize;
 					if (!isBlocked(x, z)) {
-						searchGrid.push({ x, z, searched: false });
+						rowPoints.push({
+							x,
+							z,
+							searched: false,
+							row,
+							col,
+							isRowEnd:
+								col === Math.floor((endX - startX) / gridSize),
+						});
 					}
 				}
+				// Alternate direction for efficient coverage
+				if (row % 2 === 1) rowPoints.reverse();
+				searchGrid.push(...rowPoints);
 			}
+			missionStatus.value = `GRID SEARCH - ${searchGrid.length} WAYPOINTS PLANNED`;
 		} else if (currentPattern.value === "perimeter-sweep") {
-			const margin = 4;
-			for (let i = 0; i < 360; i += 20) {
-				const angle = (i * Math.PI) / 180;
-				const radius = fs / 2 - margin;
-				const x = Math.cos(angle) * radius;
-				const z = Math.sin(angle) * radius;
-				if (!isBlocked(x, z)) {
-					missionData.waypoints.push({ x, z });
-				}
-			}
+			// TRUE PERIMETER: Start from edges, work inward systematically
+			generatePerimeterWaypoints(fs);
+			missionStatus.value = `PERIMETER SWEEP - ${missionData.waypoints.length} WAYPOINTS`;
+		} else if (currentPattern.value === "spiral-search") {
+			// Start from center and spiral outward
+			spiralState = {
+				angle: 0,
+				radius: 2,
+				center: { x: 0, z: 0 },
+				radiusGrowth:
+					currentMode.value === "search-rescue" ? 0.12 : 0.08,
+				maxRadius: fs / 2 - 5,
+			};
+			missionStatus.value = "SPIRAL SEARCH - CENTER-OUT EXPANSION";
+		} else if (currentPattern.value === "random-patrol") {
+			generateRandomPatrolPoints(fs);
+			missionStatus.value = `RANDOM PATROL - ${missionData.waypoints.length} WAYPOINTS`;
 		}
 
 		currentGridIndex = 0;
 		missionData.currentWaypoint = 0;
 		areaSearched.value = 0;
+	}
+
+	// ENHANCED: True perimeter sweep - structured layer approach
+	function generatePerimeterWaypoints(fs) {
+		missionData.waypoints = [];
+		const layers = currentMode.value === "search-rescue" ? 2 : 3;
+		const stepSize = currentMode.value === "search-rescue" ? 2 : 3;
+
+		for (let layer = 0; layer < layers; layer++) {
+			const radius = fs / 2 - 4 - layer * 8;
+			if (radius < 8) break;
+
+			const layerPoints = [];
+
+			// Top edge (left to right)
+			for (let x = -radius; x <= radius; x += stepSize) {
+				layerPoints.push({ x, z: radius, layer });
+			}
+			// Right edge (top to bottom, skip corner)
+			for (let z = radius - stepSize; z >= -radius; z -= stepSize) {
+				layerPoints.push({ x: radius, z, layer });
+			}
+			// Bottom edge (right to left, skip corner)
+			for (let x = radius - stepSize; x >= -radius; x -= stepSize) {
+				layerPoints.push({ x, z: -radius, layer });
+			}
+			// Left edge (bottom to top, skip corner)
+			for (let z = -radius + stepSize; z < radius; z += stepSize) {
+				layerPoints.push({ x: -radius, z, layer });
+			}
+
+			missionData.waypoints.push(...layerPoints);
+		}
+
+		// Always end at center for complete coverage
+		missionData.waypoints.push({ x: 0, z: 0, layer: "center" });
+	}
+
+	// NEW: Generate random patrol points
+	function generateRandomPatrolPoints(fs) {
+		missionData.waypoints = [];
+		const numPoints = 20;
+
+		for (let i = 0; i < numPoints; i++) {
+			let validPoint = false;
+			let attempts = 0;
+
+			while (!validPoint && attempts < 20) {
+				const x = (Math.random() - 0.5) * (fs - 10);
+				const z = (Math.random() - 0.5) * (fs - 10);
+
+				if (!isBlocked(x, z)) {
+					missionData.waypoints.push({ x, z });
+					validPoint = true;
+				}
+				attempts++;
+			}
+		}
 	}
 
 	// Reset Functions
@@ -256,6 +404,13 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		missionStatus.value = "INITIALIZING";
 		rotationSearchMode = false;
 		noPathTimer = 0;
+
+		// Reset mode settings
+		if (currentMode.value === "search-rescue") {
+			heatDetectionRange = 30;
+		} else {
+			heatDetectionRange = 20;
+		}
 
 		lidarData.clearDirections = [];
 		lidarData.blockedDirections = [];
@@ -444,8 +599,22 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		beacon.position.set(0, 0.9, 0.5);
 		robot.add(beacon);
 
-		const robotX = (Math.random() - 0.5) * (fs - 6);
-		const robotZ = (Math.random() - 0.5) * (fs - 6);
+		// ENHANCED: Start robot at field center or corner based on pattern
+		let robotX, robotZ;
+		if (currentPattern.value === "search-grid") {
+			// Start at top-left corner for grid search
+			robotX = -fs / 2 + 5;
+			robotZ = -fs / 2 + 5;
+		} else if (currentPattern.value === "spiral-search") {
+			// Start at center for spiral
+			robotX = 0;
+			robotZ = 0;
+		} else {
+			// Random start for other patterns
+			robotX = (Math.random() - 0.5) * (fs - 10);
+			robotZ = (Math.random() - 0.5) * (fs - 10);
+		}
+
 		robot.position.set(robotX, 0.35, robotZ);
 		robot.rotation.y = -Math.PI / 2;
 		mainScene.add(robot);
@@ -654,9 +823,12 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		return [((x + fs / 2) / fs) * 300, ((z + fs / 2) / fs) * 300];
 	}
 
+	// ENHANCED: Mode-specific heat detection
 	function scanForImmedateThreats() {
 		const currentTime = Date.now();
-		if (currentTime - lastHeatScanTime < 30) return;
+		const scanFrequency = currentMode.value === "search-rescue" ? 20 : 30;
+
+		if (currentTime - lastHeatScanTime < scanFrequency) return;
 
 		lastHeatScanTime = currentTime;
 		let humanDetected = false;
@@ -664,43 +836,48 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		let closestPriorityTarget = null;
 		let closestDistance = Infinity;
 
+		// Search-rescue mode is more aggressive
+		const effectiveRange =
+			currentMode.value === "search-rescue"
+				? heatDetectionRange * 1.5
+				: heatDetectionRange;
+
 		for (const heat of heatMeshes) {
 			const dist = Math.hypot(
 				robot.position.x - heat.position.x,
 				robot.position.z - heat.position.z
 			);
 
-			// consider heat objects within reasonable detection range
-			if (dist > heatDetectionRange) continue;
+			if (dist > effectiveRange) continue;
 
-			// Check if this heat object is visible to LiDAR (optional for closer objects)
 			let heatVisibleToLidar = false;
 
-			// If heat is very close, always consider it visible
-			if (dist < 5) {
+			if (dist < 6) {
 				heatVisibleToLidar = true;
 			} else {
-				// For distant objects, require LiDAR visibility
 				for (const direction of lidarData.heatDirections) {
 					const heatAngle = Math.atan2(
 						heat.position.x - robot.position.x,
 						heat.position.z - robot.position.z
 					);
 
-					if (Math.abs(direction.angle - heatAngle) < Math.PI / 4) {
-						// More lenient angle
+					const angleThreshold =
+						currentMode.value === "search-rescue"
+							? Math.PI / 3
+							: Math.PI / 4;
+
+					if (
+						Math.abs(direction.angle - heatAngle) < angleThreshold
+					) {
 						heatVisibleToLidar = true;
 						break;
 					}
 				}
 			}
 
-			// Only skip if heat is far AND not visible to LiDAR
-			if (!heatVisibleToLidar && dist > 5) {
-				continue;
-			}
+			if (!heatVisibleToLidar && dist > 6) continue;
 
-			// PRIORITY SYSTEM (fixed)
+			// Only target Human Survivor and Injured Animal
 			if (heat.userData.heatType === "Human Survivor") {
 				if (!humanDetected || dist < closestDistance) {
 					humanDetected = true;
@@ -720,7 +897,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			}
 		}
 
-		// INSTANT RESPONSE TO PRIORITY DETECTION
+		// Mode-specific response
 		if (
 			priorityHeatDetected &&
 			!targetLockOn &&
@@ -743,15 +920,15 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
 				const targetType = priorityTarget.userData.heatType;
 				if (targetType === "Human Survivor") {
-					missionStatus.value = `🚨 HUMAN DETECTED! DISTANCE: ${closestDistance.toFixed(1)}m`;
+					missionStatus.value = `🚨 ${currentMode.value.toUpperCase()}: HUMAN DETECTED! ${closestDistance.toFixed(1)}m`;
 				} else if (targetType === "Injured Animal") {
-					missionStatus.value = `🐾 ANIMAL DETECTED! DISTANCE: ${closestDistance.toFixed(1)}m`;
+					missionStatus.value = `🐾 ${currentMode.value.toUpperCase()}: ANIMAL DETECTED! ${closestDistance.toFixed(1)}m`;
 				}
 			}
 		}
 	}
 
-	// FIXED: Enhanced LiDAR scan with proper heat detection
+	// ENHANCED: Improved LiDAR with mode-specific fog clearing
 	function performLidarScan() {
 		lidarGroup.clear();
 
@@ -763,7 +940,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		const detectedHeats = new Set();
 		const currentTime = Date.now();
 
-		if (currentTime - lastHeatDetectionTime < 60) {
+		if (currentTime - lastHeatDetectionTime < 40) {
 			return heatDetected.value;
 		}
 		lastHeatDetectionTime = currentTime;
@@ -777,6 +954,21 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		lidarData.humanDetections = [];
 
 		const stepSize = 0.15;
+
+		// Mode-specific fog clearing frequency
+		const fogClearFrequency =
+			currentMode.value === "search-rescue" ? 30 : 50;
+
+		if (currentTime - lastFogClearTime > fogClearFrequency) {
+			const [rx, rz] = worldToMiniMap(robot.position.x, robot.position.z);
+			fogCtx.save();
+			fogCtx.globalCompositeOperation = "destination-out";
+			fogCtx.beginPath();
+			fogCtx.arc(rx, rz, fogClearingRadius, 0, 2 * Math.PI);
+			fogCtx.fill();
+			fogCtx.restore();
+			lastFogClearTime = currentTime;
+		}
 
 		for (let i = 0; i < numRays; i++) {
 			const angle = robotYaw - fov / 2 + (i / (numRays - 1)) * fov;
@@ -809,26 +1001,29 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 					maxClearDistance = r;
 				}
 
-				// Efficient fog clearing
-				if (r % 0.3 < stepSize) {
+				// Continuous fog clearing along rays
+				if (r % 0.15 < stepSize) {
 					const [rx, rz] = worldToMiniMap(x, z);
 					fogCtx.save();
 					fogCtx.globalCompositeOperation = "destination-out";
 					fogCtx.beginPath();
-					fogCtx.arc(rx, rz, 10, 0, 2 * Math.PI);
+					const clearSize =
+						currentMode.value === "search-rescue" ? 12 : 8;
+					fogCtx.arc(rx, rz, clearSize, 0, 2 * Math.PI);
 					fogCtx.fill();
 					fogCtx.restore();
 				}
 
-				// Enhanced heat detection
-				if (!hitObstacle || advancedHeatSearch.value) {
+				// Only detect heat if ray can actually reach it
+				if (!hitObstacle && !hitWall) {
 					for (const heat of heatMeshes) {
 						const heatDist = Math.hypot(
 							x - heat.position.x,
 							z - heat.position.z
 						);
-						if (heatDist < 2.5) {
-							// Increased detection radius
+						const detectionRadius = 1.2;
+
+						if (heatDist < detectionRadius) {
 							heatFound = true;
 							rayHasHeat = true;
 							detectedHeatObject = heat;
@@ -849,17 +1044,22 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 									);
 									lidarGroup.add(humanPoint);
 								}
-							} else if (lidarGroup.children.length < 80) {
-								const heatPoint = new THREE.Mesh(
+							} else if (
+								heat.userData.heatType === "Injured Animal" &&
+								lidarGroup.children.length < 80
+							) {
+								const animalPoint = new THREE.Mesh(
 									heatPointGeometry,
-									heatPointMaterial
+									new THREE.MeshBasicMaterial({
+										color: 0xff6666,
+									})
 								);
-								heatPoint.position.set(
+								animalPoint.position.set(
 									heat.position.x,
 									0.3,
 									heat.position.z
 								);
-								lidarGroup.add(heatPoint);
+								lidarGroup.add(animalPoint);
 							}
 						}
 					}
@@ -922,15 +1122,14 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			lidarGroup.add(point);
 		}
 
-		// ALWAYS check for nearby heat (within close range)
+		// ONLY check for very close heat (within 3 units)
 		for (const heat of heatMeshes) {
 			const dist = Math.hypot(
 				robot.position.x - heat.position.x,
 				robot.position.z - heat.position.z
 			);
 
-			// If heat is very close, always detect it
-			if (dist < 8) {
+			if (dist < 3) {
 				heatFound = true;
 				detectedHeats.add(heat.userData.heatType);
 			}
@@ -945,7 +1144,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			noPathTimer++;
 			if (noPathTimer > 15) {
 				rotationSearchMode = true;
-				rotationTarget = robot.rotation.y + Math.PI / 4; // Rotate 45 degrees
+				rotationTarget = robot.rotation.y + Math.PI / 4;
 				noPathTimer = 0;
 				missionStatus.value = "NO CLEAR PATH - ROTATING TO SCAN";
 			}
@@ -953,7 +1152,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			noPathTimer = 0;
 			if (rotationSearchMode) {
 				rotationSearchMode = false;
-				missionStatus.value = "CLEAR PATH FOUND - RESUMING MOVEMENT";
+				missionStatus.value = "RESUMING EXPLORATION";
 			}
 		}
 
@@ -969,9 +1168,242 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		return heatFound;
 	}
 
-	// movement Functions
+	// NEW: Spiral Search Implementation
+	function updateSpiralSearch() {
+		if (!spiralState) return;
+
+		const { center, maxRadius } = spiralState;
+		let { angle, radius, radiusGrowth } = spiralState;
+
+		// If spiral is complete, stop exploring
+		if (radius > maxRadius) {
+			missionStatus.value = "SPIRAL SEARCH COMPLETE";
+			exploring = false;
+			return;
+		}
+
+		// Calculate next spiral target point
+		const targetX = center.x + Math.cos(angle) * radius;
+		const targetZ = center.z + Math.sin(angle) * radius;
+		const distance = Math.hypot(
+			robot.position.x - targetX,
+			robot.position.z - targetZ
+		);
+
+		// If close to current spiral point, increment spiral parameters
+		if (distance < 1.5) {
+			spiralState.angle += Math.PI / 8; // Increase angle for next step
+
+			// Gradually increase radius for outward spiral
+			spiralState.radius += radiusGrowth;
+
+			// Adjust growth rate based on mode
+			if (currentMode.value === "search-rescue") {
+				spiralState.radiusGrowth = Math.min(
+					0.15,
+					spiralState.radiusGrowth + 0.001
+				);
+			} else {
+				spiralState.radiusGrowth = Math.min(
+					0.1,
+					spiralState.radiusGrowth + 0.0005
+				);
+			}
+		}
+
+		// AI-enhanced movement toward spiral point
+		const moveAngle = Math.atan2(
+			targetZ - robot.position.z,
+			targetX - robot.position.x
+		);
+		const speed =
+			robotSpeed.value *
+			(currentMode.value === "search-rescue" ? 1.8 : 1.3);
+
+		// Check if direct path is clear
+		const directX = robot.position.x + Math.cos(moveAngle) * speed;
+		const directZ = robot.position.z + Math.sin(moveAngle) * speed;
+
+		if (!isBlocked(directX, directZ)) {
+			updateTargetPosition(directX, directZ, moveAngle);
+		} else {
+			const aiDirection = findSmartDirection(targetX, targetZ);
+			const aiX = robot.position.x + Math.cos(aiDirection) * speed * 0.9;
+			const aiZ = robot.position.z + Math.sin(aiDirection) * speed * 0.9;
+			updateTargetPosition(aiX, aiZ, aiDirection);
+		}
+
+		// Progress reporting
+		const percent = Math.min(100, Math.round((radius / maxRadius) * 100));
+		missionStatus.value = `SPIRAL SEARCH - ${percent}% (R:${radius.toFixed(1)})`;
+	}
+
+	function findSmartDirection(targetX, targetZ) {
+		// Calculate desired direction toward target
+		const desiredAngle = Math.atan2(
+			targetZ - robot.position.z,
+			targetX - robot.position.x
+		);
+
+		// Create AI decision matrix for path selection
+		const pathOptions = [];
+
+		// Evaluate all clear directions with AI scoring
+		for (const direction of lidarData.clearDirections) {
+			let score = direction.quality * 100; // Base score from clearance quality
+
+			// Bonus for moving toward target
+			const angleToTarget = Math.abs(direction.angle - desiredAngle);
+			const normalizedAngle = Math.min(
+				angleToTarget,
+				2 * Math.PI - angleToTarget
+			);
+			score += (Math.PI - normalizedAngle) * 50; // Higher score for angles closer to target
+
+			// Bonus for longer clear paths
+			score += direction.clearDistance * 10;
+
+			// Mode-specific AI preferences
+			if (currentMode.value === "search-rescue") {
+				// Search-rescue mode prefers faster, more direct routes
+				score += direction.quality > 0.7 ? 30 : 0;
+				if (direction.hasHeat) score += 100; // Much higher priority for heat
+				if (direction.hasHuman) score += 200; // Maximum priority for humans
+			} else {
+				// Auto mode prefers thorough, safe exploration
+				score += direction.quality > 0.8 ? 20 : 0;
+				if (direction.hasHeat) score += 25; // Lower heat priority
+				if (direction.hasHuman) score += 150; // Still high human priority
+			}
+
+			// Penalty for directions too close to obstacles
+			if (direction.quality < 0.3) score -= 50;
+
+			// Bonus for directions that lead to unexplored areas (basic AI memory)
+			const exploreBonus = calculateExplorationBonus(direction.angle);
+			score += exploreBonus;
+
+			pathOptions.push({
+				angle: direction.angle,
+				score: score,
+				reason: `Q:${direction.quality.toFixed(2)} T:${normalizedAngle.toFixed(2)} E:${exploreBonus}`,
+			});
+		}
+
+		pathOptions.sort((a, b) => b.score - a.score);
+
+		if (pathOptions.length > 0) {
+			const bestPath = pathOptions[0];
+			return bestPath.angle;
+		}
+
+		return findBestDirection();
+	}
+
+	let exploredDirections = new Map(); 
+	let lastExplorationUpdate = 0;
+
+	function calculateExplorationBonus(angle) {
+		const currentTime = Date.now();
+
+		if (currentTime - lastExplorationUpdate > 2000) {
+			for (const [key, data] of exploredDirections.entries()) {
+				if (currentTime - data.lastVisited > 10000) {
+					exploredDirections.delete(key);
+				}
+			}
+			lastExplorationUpdate = currentTime;
+		}
+
+		// Discretize angle into sectors for memory
+		const sector = Math.floor((angle + Math.PI) / (Math.PI / 8)); // 16 sectors
+		const sectorKey = `${Math.floor(robot.position.x / 5)}_${Math.floor(robot.position.z / 5)}_${sector}`;
+
+		const explorationData = exploredDirections.get(sectorKey);
+
+		if (!explorationData) {
+			// Unexplored direction - high bonus
+			exploredDirections.set(sectorKey, {
+				lastVisited: currentTime,
+				visitCount: 1,
+			});
+			return 50;
+		} else {
+			// Recently explored - lower bonus
+			const timeSinceVisit = currentTime - explorationData.lastVisited;
+			const bonus = Math.max(
+				0,
+				30 - explorationData.visitCount * 10 + timeSinceVisit / 1000
+			);
+
+			// Update exploration data
+			explorationData.lastVisited = currentTime;
+			explorationData.visitCount++;
+
+			return bonus;
+		}
+	}
+
+	function updateRotationSearch() {
+		if (!rotationSearchMode) return;
+
+		const rotationSpeed = 0.08;
+		const targetDiff = targetRotation - robot.rotation.y;
+
+		if (Math.abs(targetDiff) < 0.1) {
+			performLidarScan(); 
+
+			if (lidarData.clearDirections.length > 0) {
+				rotationSearchMode = false;
+				exploring = true;
+				missionStatus.value = "CLEAR PATH FOUND - RESUMING EXPLORATION";
+			} else {
+				targetRotation += Math.PI / 3; 
+
+				if (Math.abs(targetRotation - robot.rotation.y) > 2 * Math.PI) {
+					emergencyManeuver = true;
+					rotationSearchMode = false;
+					missionStatus.value = "INITIATING EMERGENCY MANEUVER";
+				}
+			}
+		}
+
+		updateTargetPosition(
+			robot.position.x,
+			robot.position.z,
+			targetRotation
+		);
+	}
+
+	function findBestDirection() {
+		if (lidarData.humanDetections.length > 0) {
+			return lidarData.humanDetections[0].angle;
+		}
+
+		if (lidarData.heatDirections.length > 0) {
+			if (currentMode.value === "search-rescue") {
+				return lidarData.heatDirections[0].angle;
+			} else if (currentMode.value === "auto" && Math.random() < 0.2) {
+				return lidarData.heatDirections[0].angle;
+			}
+		}
+
+		if (emergencyManeuver && lidarData.emergencyExits.length > 0) {
+			return lidarData.emergencyExits[0].angle;
+		}
+
+		if (lidarData.bestPaths.length > 0) {
+			return lidarData.bestPaths[0].angle;
+		}
+
+		if (lidarData.clearDirections.length > 0) {
+			return lidarData.clearDirections[0].angle;
+		}
+
+		return robot.rotation.y + Math.PI / 6;
+	}
+
 	function smoothMovement() {
-		// Check if stuck
 		const distMoved = Math.hypot(
 			robot.position.x - lastPosition.x,
 			robot.position.z - lastPosition.z
@@ -991,16 +1423,18 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		lastPosition.x = robot.position.x;
 		lastPosition.z = robot.position.z;
 
-		// Enhanced smooth interpolation
+		const modeSmoothingFactor =
+			currentMode.value === "search-rescue" ? 0.3 : 0.25;
+
 		robot.position.x +=
-			(targetPosition.x - robot.position.x) * smoothingFactor;
+			(targetPosition.x - robot.position.x) * modeSmoothingFactor;
 		robot.position.z +=
-			(targetPosition.z - robot.position.z) * smoothingFactor;
+			(targetPosition.z - robot.position.z) * modeSmoothingFactor;
 
 		let rotDiff = targetRotation - robot.rotation.y;
 		if (rotDiff > Math.PI) rotDiff -= 2 * Math.PI;
 		if (rotDiff < -Math.PI) rotDiff += 2 * Math.PI;
-		robot.rotation.y += rotDiff * smoothingFactor;
+		robot.rotation.y += rotDiff * modeSmoothingFactor;
 	}
 
 	function updateTargetPosition(x, z, rotation) {
@@ -1013,19 +1447,17 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		}
 	}
 
-	// Improved pathfinding with better direction selection
 	function findBestDirection() {
-		// PRIORITY 1: Human detection directions
 		if (lidarData.humanDetections.length > 0) {
 			return lidarData.humanDetections[0].angle;
 		}
 
-		// PRIORITY 2: Heat directions (if in search mode)
-		if (
-			lidarData.heatDirections.length > 0 &&
-			(currentMode.value === "search-rescue" || seekingHeat)
-		) {
-			return lidarData.heatDirections[0].angle;
+		if (lidarData.heatDirections.length > 0) {
+			if (currentMode.value === "search-rescue") {
+				return lidarData.heatDirections[0].angle;
+			} else if (currentMode.value === "auto" && Math.random() < 0.2) {
+				return lidarData.heatDirections[0].angle;
+			}
 		}
 
 		// Emergency maneuver
@@ -1043,48 +1475,233 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			return lidarData.clearDirections[0].angle;
 		}
 
-		// If truly no clear paths, just rotate slightly
-		return robot.rotation.y + Math.PI / 6; // Rotate 30 degrees
+		return robot.rotation.y + Math.PI / 6;
 	}
 
-	function findAvoidanceDirection() {
-		return findBestDirection();
-	}
+	function performLidarScan() {
+		lidarGroup.clear();
 
-	// Improved rotation search with faster response
-	function updateRotationSearch() {
+		const fov = lidarFov.value;
+		const numRays = lidarNumRays.value;
+		const radius = lidarRadius.value;
+		const robotYaw = robot.rotation.y;
+		let heatFound = false;
+		const detectedHeats = new Set();
 		const currentTime = Date.now();
 
-		// Rotate towards target rotation
-		let rotDiff = rotationTarget - robot.rotation.y;
-		if (rotDiff > Math.PI) rotDiff -= 2 * Math.PI;
-		if (rotDiff < -Math.PI) rotDiff += 2 * Math.PI;
+		if (currentTime - lastHeatDetectionTime < 40) {
+			return heatDetected.value;
+		}
+		lastHeatDetectionTime = currentTime;
 
-		targetRotation = robot.rotation.y + rotDiff * 0.15; // Faster rotation
+		lidarData.clearDirections = [];
+		lidarData.blockedDirections = [];
+		lidarData.heatDirections = [];
+		lidarData.emergencyExits = [];
+		lidarData.bestPaths = [];
+		lidarData.humanDetections = [];
 
-		// Check if rotation complete or clear path found
-		if (Math.abs(rotDiff) < 0.1 || lidarData.clearDirections.length > 2) {
-			if (currentTime - lastRotationTime > 1000) {
-				// Reduced wait time
-				lastRotationTime = currentTime;
+		const stepSize = 0.15;
 
-				if (lidarData.clearDirections.length > 0) {
-					rotationSearchMode = false;
-					exploring = true;
-					missionStatus.value =
-						"CLEAR PATH FOUND - RESUMING MOVEMENT";
-				} else {
-					rotationTarget += Math.PI / 3; // Rotate another 60 degrees
-					missionStatus.value = "CONTINUING ROTATION SCAN...";
+		const fogClearFrequency =
+			currentMode.value === "search-rescue" ? 30 : 50;
+
+		if (currentTime - lastFogClearTime > fogClearFrequency) {
+			const [rx, rz] = worldToMiniMap(robot.position.x, robot.position.z);
+			fogCtx.save();
+			fogCtx.globalCompositeOperation = "destination-out";
+			fogCtx.beginPath();
+			fogCtx.arc(rx, rz, fogClearingRadius, 0, 2 * Math.PI);
+			fogCtx.fill();
+			fogCtx.restore();
+			lastFogClearTime = currentTime;
+		}
+
+		for (let i = 0; i < numRays; i++) {
+			const angle = robotYaw - fov / 2 + (i / (numRays - 1)) * fov;
+			let lastX = robot.position.x;
+			let lastZ = robot.position.z;
+			let hitObstacle = false;
+			let hitWall = false;
+			let rayHasHeat = false;
+			let rayHasHuman = false;
+			let maxClearDistance = 0;
+			let detectedHeatObject = null;
+
+			for (let r = stepSize; r <= radius; r += stepSize) {
+				const x = robot.position.x + Math.sin(angle) * r;
+				const z = robot.position.z + Math.cos(angle) * r;
+
+				if (isWall(x, z)) {
+					hitWall = true;
+					break;
 				}
+
+				if (isObstacle(x, z)) {
+					hitObstacle = true;
+					if (!advancedHeatSearch.value) {
+						break;
+					}
+				}
+
+				if (!hitObstacle && !hitWall) {
+					maxClearDistance = r;
+				}
+
+				if (r % 0.15 < stepSize) {
+					const [rx, rz] = worldToMiniMap(x, z);
+					fogCtx.save();
+					fogCtx.globalCompositeOperation = "destination-out";
+					fogCtx.beginPath();
+					const clearSize =
+						currentMode.value === "search-rescue" ? 12 : 8;
+					fogCtx.arc(rx, rz, clearSize, 0, 2 * Math.PI);
+					fogCtx.fill();
+					fogCtx.restore();
+				}
+
+				if (!hitObstacle && !hitWall) {
+					for (const heat of heatMeshes) {
+						const heatDist = Math.hypot(
+							x - heat.position.x,
+							z - heat.position.z
+						);
+						const detectionRadius = 1.2; 
+
+						if (heatDist < detectionRadius) {
+							heatFound = true;
+							rayHasHeat = true;
+							detectedHeatObject = heat;
+							detectedHeats.add(heat.userData.heatType);
+
+							if (heat.userData.heatType === "Human Survivor") {
+								rayHasHuman = true;
+
+								if (lidarGroup.children.length < 80) {
+									const humanPoint = new THREE.Mesh(
+										heatPointGeometry,
+										priorityHeatMaterial
+									);
+									humanPoint.position.set(
+										heat.position.x,
+										0.4,
+										heat.position.z
+									);
+									lidarGroup.add(humanPoint);
+								}
+							} else if (
+								heat.userData.heatType === "Injured Animal" &&
+								lidarGroup.children.length < 80
+							) {
+								const animalPoint = new THREE.Mesh(
+									heatPointGeometry,
+									new THREE.MeshBasicMaterial({
+										color: 0xff6666,
+									})
+								);
+								animalPoint.position.set(
+									heat.position.x,
+									0.3,
+									heat.position.z
+								);
+								lidarGroup.add(animalPoint);
+							}
+						}
+					}
+				}
+
+				lastX = x;
+				lastZ = z;
+			}
+
+			// Enhanced direction classification
+			let pointMaterial = lidarPointMaterial;
+			let directionType = "clear";
+
+			if (hitWall) {
+				pointMaterial = wallPointMaterial;
+				directionType = "wall";
+			} else if (hitObstacle) {
+				pointMaterial = obstaclePointMaterial;
+				directionType = "obstacle";
+			}
+
+			const directionData = {
+				angle: angle,
+				distance: Math.hypot(
+					lastX - robot.position.x,
+					lastZ - robot.position.z
+				),
+				clearDistance: maxClearDistance,
+				hasHeat: rayHasHeat,
+				hasHuman: rayHasHuman,
+				heatObject: detectedHeatObject,
+				type: directionType,
+				quality: maxClearDistance / radius,
+			};
+
+			// Classify directions
+			if (directionType === "clear") {
+				lidarData.clearDirections.push(directionData);
+				if (maxClearDistance > radius * 0.6) {
+					lidarData.bestPaths.push(directionData);
+				}
+				if (maxClearDistance > radius * 0.8) {
+					lidarData.emergencyExits.push(directionData);
+				}
+			} else {
+				lidarData.blockedDirections.push(directionData);
+			}
+
+			if (rayHasHeat) {
+				lidarData.heatDirections.push(directionData);
+			}
+
+			if (rayHasHuman) {
+				lidarData.humanDetections.push(directionData);
+			}
+
+			// Add LiDAR point
+			const point = new THREE.Mesh(lidarPointGeometry, pointMaterial);
+			point.position.set(lastX, 0.12, lastZ);
+			lidarGroup.add(point);
+		}
+
+		if (
+			lidarData.clearDirections.length === 0 &&
+			!rotationSearchMode &&
+			currentMode.value !== "manual"
+		) {
+			noPathTimer++;
+			if (noPathTimer > 15) {
+				rotationSearchMode = true;
+				rotationTarget = robot.rotation.y + Math.PI / 4;
+				noPathTimer = 0;
+				missionStatus.value = "NO CLEAR PATH - ROTATING TO SCAN";
+			}
+		} else if (lidarData.clearDirections.length > 0) {
+			noPathTimer = 0;
+			if (rotationSearchMode) {
+				rotationSearchMode = false;
+				missionStatus.value = "RESUMING EXPLORATION";
 			}
 		}
+
+		// Sort by quality
+		lidarData.clearDirections.sort((a, b) => b.quality - a.quality);
+		lidarData.bestPaths.sort((a, b) => b.quality - a.quality);
+		lidarData.heatDirections.sort((a, b) => b.distance - a.distance);
+		lidarData.humanDetections.sort((a, b) => b.distance - a.distance);
+
+		detectedHeatTypes.value = Array.from(detectedHeats);
+		heatDetected.value = heatFound;
+
+		return heatFound;
 	}
 
-	// Enhanced search patterns
 	function updateSearchGrid() {
 		if (currentGridIndex >= searchGrid.length) {
-			missionStatus.value = "GRID SEARCH COMPLETE";
+			missionStatus.value = "GRID SEARCH COMPLETE - 100%";
 			exploring = false;
 			return;
 		}
@@ -1095,13 +1712,17 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			robot.position.z - target.z
 		);
 
-		if (distance < 2) {
+		if (distance < 1.5) {
 			target.searched = true;
 			currentGridIndex++;
 			areaSearched.value = Math.round(
 				(currentGridIndex / searchGrid.length) * 100
 			);
-			missionStatus.value = `SEARCHING... ${areaSearched.value}% COMPLETE`;
+
+			const currentTarget = searchGrid[currentGridIndex - 1];
+			if (currentTarget) {
+				missionStatus.value = `GRID R${currentTarget.row + 1}C${currentTarget.col + 1} - ${areaSearched.value}%`;
+			}
 		}
 
 		if (currentGridIndex < searchGrid.length) {
@@ -1111,79 +1732,24 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 				nextTarget.z - robot.position.z
 			);
 
-			const targetDirection = lidarData.clearDirections.find(
-				(dir) => Math.abs(dir.angle - angle) < Math.PI / 3
-			);
+			// DIRECT movement toward grid point - ignore pathfinding unless absolutely blocked
+			const speed =
+				robotSpeed.value *
+				(currentMode.value === "search-rescue" ? 2 : 1.5);
+			const nextX = robot.position.x + Math.sin(angle) * speed;
+			const nextZ = robot.position.z + Math.cos(angle) * speed;
 
-			if (targetDirection) {
-				const nextX =
-					robot.position.x +
-					Math.sin(targetDirection.angle) * robotSpeed.value;
-				const nextZ =
-					robot.position.z +
-					Math.cos(targetDirection.angle) * robotSpeed.value;
-				updateTargetPosition(nextX, nextZ, targetDirection.angle);
+			if (!isBlocked(nextX, nextZ)) {
+				updateTargetPosition(nextX, nextZ, angle);
 			} else {
+				// Only use pathfinding if direct path blocked
 				const bestDir = findBestDirection();
-				const nextX =
-					robot.position.x + Math.sin(bestDir) * robotSpeed.value;
-				const nextZ =
-					robot.position.z + Math.cos(bestDir) * robotSpeed.value;
-				updateTargetPosition(nextX, nextZ, bestDir);
+				const fallbackX =
+					robot.position.x + Math.sin(bestDir) * speed * 0.8;
+				const fallbackZ =
+					robot.position.z + Math.cos(bestDir) * speed * 0.8;
+				updateTargetPosition(fallbackX, fallbackZ, bestDir);
 			}
-		}
-	}
-
-	function updateSpiralSearch() {
-		if (!spiralState) {
-			spiralState = {
-				angle: 0,
-				radius: 2,
-				center: { x: robot.position.x, z: robot.position.z },
-				radiusGrowth: 0.05,
-			};
-		}
-
-		spiralState.angle += 0.08;
-		spiralState.radius += spiralState.radiusGrowth;
-
-		const nextX =
-			spiralState.center.x +
-			Math.cos(spiralState.angle) * spiralState.radius;
-		const nextZ =
-			spiralState.center.z +
-			Math.sin(spiralState.angle) * spiralState.radius;
-
-		const targetAngle = Math.atan2(
-			nextX - robot.position.x,
-			nextZ - robot.position.z
-		);
-		const directionClear = lidarData.clearDirections.some(
-			(dir) =>
-				Math.abs(dir.angle - targetAngle) < Math.PI / 2.5 &&
-				dir.distance > 2.5
-		);
-
-		if (directionClear && !isBlocked(nextX, nextZ)) {
-			updateTargetPosition(nextX, nextZ, targetAngle);
-		} else {
-			const escapeDirection = findBestDirection();
-			const moveDistance = robotSpeed.value * 3;
-			const newX =
-				robot.position.x + Math.sin(escapeDirection) * moveDistance;
-			const newZ =
-				robot.position.z + Math.cos(escapeDirection) * moveDistance;
-
-			if (!isBlocked(newX, newZ)) {
-				updateTargetPosition(newX, newZ, escapeDirection);
-			}
-
-			spiralState = {
-				angle: 0,
-				radius: 1.5,
-				center: { x: robot.position.x, z: robot.position.z },
-				radiusGrowth: 0.05,
-			};
 		}
 	}
 
@@ -1200,13 +1766,18 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 			robot.position.z - waypoint.z
 		);
 
-		if (distance < 2.5) {
+		if (distance < 1.2) {
 			missionData.currentWaypoint++;
 			const progress = Math.round(
 				(missionData.currentWaypoint / missionData.waypoints.length) *
 					100
 			);
-			missionStatus.value = `PERIMETER SWEEP... ${progress}% COMPLETE`;
+
+			const layer =
+				waypoint.layer === "center"
+					? "CENTER"
+					: `L${waypoint.layer + 1}`;
+			missionStatus.value = `PERIMETER ${layer} - ${progress}%`;
 		}
 
 		if (missionData.currentWaypoint < missionData.waypoints.length) {
@@ -1216,30 +1787,59 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 				target.z - robot.position.z
 			);
 
-			const bestDirection = findBestDirection();
-			const nextX =
-				robot.position.x + Math.sin(bestDirection) * robotSpeed.value;
-			const nextZ =
-				robot.position.z + Math.cos(bestDirection) * robotSpeed.value;
-			updateTargetPosition(nextX, nextZ, bestDirection);
+			// DIRECT movement toward perimeter point
+			const speed =
+				robotSpeed.value *
+				(currentMode.value === "search-rescue" ? 2 : 1.6);
+			const nextX = robot.position.x + Math.sin(angle) * speed;
+			const nextZ = robot.position.z + Math.cos(angle) * speed;
+
+			if (!isBlocked(nextX, nextZ)) {
+				updateTargetPosition(nextX, nextZ, angle);
+			} else {
+				// Only use pathfinding if direct path blocked
+				const bestDirection = findBestDirection();
+				const fallbackX =
+					robot.position.x + Math.sin(bestDirection) * speed * 0.9;
+				const fallbackZ =
+					robot.position.z + Math.cos(bestDirection) * speed * 0.9;
+				updateTargetPosition(fallbackX, fallbackZ, bestDirection);
+			}
 		}
 	}
 
 	function updateRandomPatrol() {
 		if (!randomWalkState || randomWalkState.steps <= 0) {
-			const bestDirection = findBestDirection();
-			randomWalkState = {
-				angle: bestDirection,
-				steps: Math.floor(50 + Math.random() * 70),
-			};
+			// Pick random waypoint or direction
+			if (missionData.waypoints.length > 0 && Math.random() < 0.6) {
+				const randomWaypoint =
+					missionData.waypoints[
+						Math.floor(Math.random() * missionData.waypoints.length)
+					];
+				const angle = Math.atan2(
+					randomWaypoint.x - robot.position.x,
+					randomWaypoint.z - robot.position.z
+				);
+				randomWalkState = {
+					angle: angle,
+					steps: Math.floor(40 + Math.random() * 60),
+				};
+			} else {
+				const bestDirection = findBestDirection();
+				randomWalkState = {
+					angle: bestDirection,
+					steps: Math.floor(30 + Math.random() * 50),
+				};
+			}
 		}
 
+		const speed =
+			robotSpeed.value *
+			(currentMode.value === "search-rescue" ? 1.5 : 1);
 		const nextX =
-			robot.position.x +
-			Math.sin(randomWalkState.angle) * robotSpeed.value;
+			robot.position.x + Math.sin(randomWalkState.angle) * speed;
 		const nextZ =
-			robot.position.z +
-			Math.cos(randomWalkState.angle) * robotSpeed.value;
+			robot.position.z + Math.cos(randomWalkState.angle) * speed;
 
 		const directionClear = lidarData.clearDirections.some(
 			(dir) =>
@@ -1250,6 +1850,11 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		if (directionClear && !isBlocked(nextX, nextZ)) {
 			updateTargetPosition(nextX, nextZ, randomWalkState.angle);
 			randomWalkState.steps--;
+
+			const progress = Math.round(
+				((100 - randomWalkState.steps) / 100) * 100
+			);
+			missionStatus.value = `RANDOM PATROL - Segment ${progress}%`;
 		} else {
 			randomWalkState.angle = findBestDirection();
 			randomWalkState.steps = Math.floor(20 + Math.random() * 30);
@@ -1260,7 +1865,6 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 		animationId = requestAnimationFrame(animate);
 
 		smoothMovement();
-
 		performLidarScan();
 		scanForImmedateThreats();
 
@@ -1291,6 +1895,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 				);
 			}
 
+			// Manual collection
 			for (let i = heatMeshes.length - 1; i >= 0; i--) {
 				const heat = heatMeshes[i];
 				const dist = Math.hypot(
@@ -1304,12 +1909,12 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 					heatMeshes.splice(i, 1);
 					targetsFound.value++;
 					spawnHeatSignature();
-
-					const targetType = heat.userData.heatType;
 					break;
 				}
 			}
-		} else if (
+		}
+		// Target lock-on mode
+		else if (
 			targetLockOn &&
 			priorityTarget &&
 			heatMeshes.includes(priorityTarget)
@@ -1347,9 +1952,12 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
 				if (bestApproach) {
 					const speedMultiplier =
-						priorityTarget.userData.heatType === "Human Survivor"
-							? 2.5
-							: 2;
+						currentMode.value === "search-rescue"
+							? 2.8
+							: priorityTarget.userData.heatType ===
+								  "Human Survivor"
+								? 2.5
+								: 2;
 					const nextX =
 						robot.position.x +
 						Math.sin(bestApproach.angle) *
@@ -1365,11 +1973,9 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
 				const targetType = priorityTarget.userData.heatType;
 				if (targetType === "Human Survivor") {
-					missionStatus.value = `🚨 APPROACHING HUMAN - ${distance.toFixed(1)}m`;
+					missionStatus.value = `🚨 ${currentMode.value.toUpperCase()}: APPROACHING HUMAN - ${distance.toFixed(1)}m`;
 				} else if (targetType === "Injured Animal") {
-					missionStatus.value = `🐾 APPROACHING ANIMAL - ${distance.toFixed(1)}m`;
-				} else {
-					missionStatus.value = `🎯 APPROACHING ${targetType} - ${distance.toFixed(1)}m`;
+					missionStatus.value = `🐾 ${currentMode.value.toUpperCase()}: APPROACHING ANIMAL - ${distance.toFixed(1)}m`;
 				}
 			} else {
 				// Target collected
@@ -1390,13 +1996,16 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 					missionStatus.value = "🚑 HUMAN RESCUED! RESUMING SEARCH";
 				} else if (targetType === "Injured Animal") {
 					missionStatus.value = "🐾 ANIMAL RESCUED! RESUMING SEARCH";
-				} else {
-					missionStatus.value = `✅ ${targetType} COLLECTED! RESUMING SEARCH`;
 				}
 			}
-		} else if (rotationSearchMode && currentMode.value !== "manual") {
+		}
+		// Rotation search mode
+		else if (rotationSearchMode && currentMode.value !== "manual") {
 			updateRotationSearch();
-		} else if (exploring) {
+		}
+		// Regular exploration patterns
+		else if (exploring) {
+			// Continuous collection during exploration
 			for (let i = heatMeshes.length - 1; i >= 0; i--) {
 				const heat = heatMeshes[i];
 				const dist = Math.hypot(
@@ -1410,11 +2019,10 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 					heatMeshes.splice(i, 1);
 					targetsFound.value++;
 					spawnHeatSignature();
-
-					const targetType = heat.userData.heatType;
 				}
 			}
 
+			// Execute search patterns
 			if (currentPattern.value === "search-grid") {
 				updateSearchGrid();
 			} else if (currentPattern.value === "spiral-search") {
