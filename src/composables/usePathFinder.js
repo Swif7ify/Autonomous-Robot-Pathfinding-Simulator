@@ -2,6 +2,7 @@ import { ref, onMounted, watch } from 'vue'
 import * as THREE from 'three'
 
 export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
+  // --- Reactive State ---
   const fieldSize = ref(40)
   const patterns = ['lawnmower', 'spiral', 'random']
   const currentPattern = ref('lawnmower')
@@ -12,14 +13,31 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
   const lidarFov = ref(Math.PI / 3)
   const texturesEnabled = ref(false)
   const heatDetected = ref(false)
-  const numHeatObjects = ref(0)
+  const numHeatObjects = ref(3)
   const robotSpeed = ref(0.08)
 
+  // NEW: Camera and advanced features
+  const cameraMode = ref('first-person') // 'first-person' or 'third-person'
+  const advancedHeatSearch = ref(false)
+  const numObstacles = ref(3)
+  const detectedHeatTypes = ref([])
+
+  // Heat signature types
+  const heatTypes = [
+    { name: 'Human Body', color: 0xff4444, emissive: 0xff0000, temp: 37, size: 0.6 },
+    { name: 'Vehicle Engine', color: 0xff8800, emissive: 0xff4400, temp: 85, size: 0.8 },
+    { name: 'Electrical Equipment', color: 0xffff00, emissive: 0xffaa00, temp: 45, size: 0.4 },
+    { name: 'Fire Source', color: 0xff0000, emissive: 0xff6600, temp: 200, size: 1.0 },
+    { name: 'Animal', color: 0xff6666, emissive: 0xff3333, temp: 39, size: 0.5 },
+  ]
+
+  // --- Internal State ---
   let manualControl = { forward: false, backward: false, left: false, right: false }
   let robot = null
   let wallTexture, heatTexture, skyTexture, groundTexture
   let wallMeshes = []
   let heatMeshes = []
+  let obstacleMeshes = []
   let mainScene = null
   let field = null
   let fogCtx = null
@@ -37,10 +55,14 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
   let seekingHeat = false
   let path = []
   let pathIndex = 0
+  let avoidanceMode = false
+  let avoidanceDirection = null
 
+  // Optimized geometries
   let lidarPointGeometry = new THREE.SphereGeometry(0.05, 8, 8)
   let lidarPointMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff })
 
+  // --- Toggle Functions ---
   function togglePattern() {
     const idx = patterns.indexOf(currentPattern.value)
     currentPattern.value = patterns[(idx + 1) % patterns.length]
@@ -53,7 +75,14 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
   function toggleTextures() {
     texturesEnabled.value = !texturesEnabled.value
   }
+  function toggleCameraMode() {
+    cameraMode.value = cameraMode.value === 'first-person' ? 'third-person' : 'first-person'
+  }
+  function toggleAdvancedHeatSearch() {
+    advancedHeatSearch.value = !advancedHeatSearch.value
+  }
 
+  // --- Reset Functions ---
   function resetPatternStates() {
     exploring = true
     mowDirection = 1
@@ -65,11 +94,15 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     targetReached = false
     path = []
     pathIndex = 0
+    avoidanceMode = false
+    avoidanceDirection = null
+    detectedHeatTypes.value = []
   }
 
   function resetSimulation() {
     resetPatternStates()
 
+    // Clear existing scene
     if (mainScene) {
       wallMeshes.forEach((w) => {
         mainScene.remove(w)
@@ -80,6 +113,11 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
         mainScene.remove(h)
         h.geometry.dispose()
         h.material.dispose()
+      })
+      obstacleMeshes.forEach((o) => {
+        mainScene.remove(o)
+        o.geometry.dispose()
+        o.material.dispose()
       })
       if (field) {
         mainScene.remove(field)
@@ -95,7 +133,9 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     }
     wallMeshes = []
     heatMeshes = []
+    obstacleMeshes = []
 
+    // Reset fog
     if (fogCtx) {
       fogCtx.clearRect(0, 0, 300, 300)
       fogCtx.fillStyle = '#111'
@@ -119,7 +159,6 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
   }
 
   function spawnMoreHeat() {
-    // Remove existing heat objects
     heatMeshes.forEach((h) => {
       mainScene.remove(h)
       h.geometry.dispose()
@@ -127,9 +166,21 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     })
     heatMeshes = []
 
-    // Spawn new ones
     for (let i = 0; i < numHeatObjects.value; i++) {
       spawnHeatSignature()
+    }
+  }
+
+  function spawnMoreObstacles() {
+    obstacleMeshes.forEach((o) => {
+      mainScene.remove(o)
+      o.geometry.dispose()
+      o.material.dispose()
+    })
+    obstacleMeshes = []
+
+    for (let i = 0; i < numObstacles.value; i++) {
+      spawnObstacle()
     }
   }
 
@@ -181,6 +232,11 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     robot.rotation.y = -Math.PI / 2
     mainScene.add(robot)
 
+    // Obstacles
+    for (let i = 0; i < numObstacles.value; i++) {
+      spawnObstacle()
+    }
+
     // Heat objects
     for (let i = 0; i < numHeatObjects.value; i++) {
       spawnHeatSignature()
@@ -200,28 +256,96 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     }
   }
 
-  // --- Heat Signature ---
-  function spawnHeatSignature() {
-    const heatGeometry = new THREE.SphereGeometry(0.5, 32, 32)
-    const heatMaterial = new THREE.MeshPhongMaterial({ color: 0xffa500, emissive: 0xff6600 })
-    const heat = new THREE.Mesh(heatGeometry, heatMaterial)
+  // --- Obstacle Creation ---
+  function spawnObstacle() {
+    const obstacleTypes = [
+      // Box obstacles
+      () => new THREE.BoxGeometry(2 + Math.random() * 2, 1 + Math.random(), 2 + Math.random() * 2),
+      // Cylinder obstacles
+      () =>
+        new THREE.CylinderGeometry(0.5 + Math.random(), 0.5 + Math.random(), 1 + Math.random(), 8),
+      // Cone obstacles
+      () => new THREE.ConeGeometry(1 + Math.random(), 2 + Math.random(), 8),
+    ]
+
+    const geometry = obstacleTypes[Math.floor(Math.random() * obstacleTypes.length)]()
+    const material = new THREE.MeshPhongMaterial({ color: 0x666666 })
+    const obstacle = new THREE.Mesh(geometry, material)
+
     const fs = fieldSize.value
-    const x = (Math.random() - 0.5) * (fs - 6)
-    const z = (Math.random() - 0.5) * (fs - 6)
-    heat.position.set(x, 0.5, z)
-    heatMeshes.push(heat)
-    mainScene.add(heat)
+    let x, z
+    let validPosition = false
+    let attempts = 0
+
+    // Find valid position (not too close to robot or walls)
+    while (!validPosition && attempts < 50) {
+      x = (Math.random() - 0.5) * (fs - 8)
+      z = (Math.random() - 0.5) * (fs - 8)
+
+      const distToRobot = Math.hypot(x - robot.position.x, z - robot.position.z)
+      const distToWall = Math.min(
+        Math.abs(x + fs / 2),
+        Math.abs(x - fs / 2),
+        Math.abs(z + fs / 2),
+        Math.abs(z - fs / 2),
+      )
+
+      if (distToRobot > 3 && distToWall > 3) {
+        validPosition = true
+      }
+      attempts++
+    }
+
+    obstacle.position.set(x, geometry.parameters?.height / 2 || 1, z)
+    obstacle.userData = { type: 'obstacle' }
+    obstacleMeshes.push(obstacle)
+    mainScene.add(obstacle)
   }
 
-  function placeHeatSignature() {
-    // Move existing heat to new position
-    if (heatMeshes.length > 0) {
-      const heat = heatMeshes[0]
-      const fs = fieldSize.value
-      const x = (Math.random() - 0.5) * (fs - 6)
-      const z = (Math.random() - 0.5) * (fs - 6)
-      heat.position.set(x, 0.5, z)
+  // --- Heat Signature with Types ---
+  function spawnHeatSignature() {
+    const heatType = heatTypes[Math.floor(Math.random() * heatTypes.length)]
+    const heatGeometry = new THREE.SphereGeometry(heatType.size, 32, 32)
+    const heatMaterial = new THREE.MeshPhongMaterial({
+      color: heatType.color,
+      emissive: heatType.emissive,
+    })
+    const heat = new THREE.Mesh(heatGeometry, heatMaterial)
+
+    const fs = fieldSize.value
+    let x, z
+    let validPosition = false
+    let attempts = 0
+
+    // Find valid position
+    while (!validPosition && attempts < 50) {
+      x = (Math.random() - 0.5) * (fs - 6)
+      z = (Math.random() - 0.5) * (fs - 6)
+
+      const distToRobot = Math.hypot(x - robot.position.x, z - robot.position.z)
+      let tooCloseToObstacle = false
+
+      for (const obstacle of obstacleMeshes) {
+        if (Math.hypot(x - obstacle.position.x, z - obstacle.position.z) < 3) {
+          tooCloseToObstacle = true
+          break
+        }
+      }
+
+      if (distToRobot > 2 && !tooCloseToObstacle) {
+        validPosition = true
+      }
+      attempts++
     }
+
+    heat.position.set(x, 0.5, z)
+    heat.userData = {
+      type: 'heat',
+      heatType: heatType.name,
+      temperature: heatType.temp,
+    }
+    heatMeshes.push(heat)
+    mainScene.add(heat)
   }
 
   // --- Materials ---
@@ -251,12 +375,24 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     return x <= -fs / 2 + 0.5 || x >= fs / 2 - 0.5 || z <= -fs / 2 + 0.5 || z >= fs / 2 - 0.5
   }
 
+  function isObstacle(x, z) {
+    for (const obstacle of obstacleMeshes) {
+      const dist = Math.hypot(x - obstacle.position.x, z - obstacle.position.z)
+      if (dist < 1.5) return true
+    }
+    return false
+  }
+
+  function isBlocked(x, z) {
+    return isWall(x, z) || isObstacle(x, z)
+  }
+
   function worldToMiniMap(x, z) {
     const fs = fieldSize.value
     return [((x + fs / 2) / fs) * 300, ((z + fs / 2) / fs) * 300]
   }
 
-  // --- LiDAR Simulation ---
+  // --- Enhanced LiDAR Simulation ---
   function performLidarScan() {
     lidarGroup.clear()
     const fov = lidarFov.value
@@ -264,18 +400,37 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     const radius = lidarRadius.value
     const robotYaw = robot.rotation.y
     let heatFound = false
+    let wallsDetected = 0
+    let obstaclesDetected = 0
+    const detectedHeats = new Set()
 
     for (let i = 0; i < numRays; i++) {
       const angle = robotYaw - fov / 2 + (i / (numRays - 1)) * fov
       let lastX = robot.position.x
       let lastZ = robot.position.z
+      let hitObstacle = false
+      let hitWall = false
 
       // Raycast
       for (let r = 0.1; r <= radius; r += 0.1) {
         const x = robot.position.x + Math.sin(angle) * r
         const z = robot.position.z + Math.cos(angle) * r
 
-        if (isWall(x, z)) break
+        if (isWall(x, z)) {
+          hitWall = true
+          wallsDetected++
+          break
+        }
+
+        if (isObstacle(x, z)) {
+          hitObstacle = true
+          obstaclesDetected++
+
+          // Advanced heat search can see through obstacles
+          if (!advancedHeatSearch.value) {
+            break
+          }
+        }
 
         // Clear fog
         const [rx, rz] = worldToMiniMap(x, z)
@@ -288,8 +443,21 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
         // Check for heat
         for (const heat of heatMeshes) {
-          if (Math.hypot(x - heat.position.x, z - heat.position.z) < 1.2) {
+          const heatDist = Math.hypot(x - heat.position.x, z - heat.position.z)
+          if (heatDist < 1.2) {
             heatFound = true
+            detectedHeats.add(heat.userData.heatType)
+
+            // Enhanced heat detection - can see through obstacles if advanced mode
+            if (advancedHeatSearch.value || !hitObstacle) {
+              // Add heat signature visualization
+              const heatPoint = new THREE.Mesh(
+                new THREE.SphereGeometry(0.1, 8, 8),
+                new THREE.MeshBasicMaterial({ color: 0xff0000 }),
+              )
+              heatPoint.position.set(heat.position.x, 0.2, heat.position.z)
+              lidarGroup.add(heatPoint)
+            }
           }
         }
 
@@ -297,17 +465,55 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
         lastZ = z
       }
 
-      // Draw LiDAR point
-      const point = new THREE.Mesh(lidarPointGeometry, lidarPointMaterial)
+      // Draw LiDAR point with different colors based on what was hit
+      let pointColor = 0x00ffff // Default cyan
+      if (hitWall)
+        pointColor = 0xff0000 // Red for walls
+      else if (hitObstacle) pointColor = 0xffff00 // Yellow for obstacles
+
+      const pointMaterial = new THREE.MeshBasicMaterial({ color: pointColor })
+      const point = new THREE.Mesh(lidarPointGeometry, pointMaterial)
       point.position.set(lastX, 0.1, lastZ)
       lidarGroup.add(point)
     }
 
+    // Update detected heat types
+    detectedHeatTypes.value = Array.from(detectedHeats)
     heatDetected.value = heatFound
+
+    // Store detection info for AI decision making
+    robot.lidarInfo = {
+      wallsDetected,
+      obstaclesDetected,
+      heatDetected: heatFound,
+      detectedHeatTypes: Array.from(detectedHeats),
+    }
+
     return heatFound
   }
 
-  // --- Movement Patterns ---
+  // --- Enhanced Movement Patterns with Obstacle Avoidance ---
+  function findAvoidanceDirection() {
+    const testAngles = [
+      robot.rotation.y + Math.PI / 4, // 45° right
+      robot.rotation.y - Math.PI / 4, // 45° left
+      robot.rotation.y + Math.PI / 2, // 90° right
+      robot.rotation.y - Math.PI / 2, // 90° left
+      robot.rotation.y + Math.PI, // 180° behind
+    ]
+
+    for (const angle of testAngles) {
+      const testX = robot.position.x + Math.sin(angle) * 2
+      const testZ = robot.position.z + Math.cos(angle) * 2
+
+      if (!isBlocked(testX, testZ)) {
+        return angle
+      }
+    }
+
+    return robot.rotation.y + Math.PI // Default to turning around
+  }
+
   function updateLawnmower() {
     const fs = fieldSize.value
     const minX = -fs / 2 + 1
@@ -316,20 +522,51 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     const maxZ = fs / 2 - 1
     const spacing = 2
 
+    // Check for obstacles ahead
+    const frontX = robot.position.x + Math.sin(robot.rotation.y) * 1.5
+    const frontZ = robot.position.z + Math.cos(robot.rotation.y) * 1.5
+
+    if (isObstacle(frontX, frontZ) && !avoidanceMode) {
+      avoidanceMode = true
+      avoidanceDirection = findAvoidanceDirection()
+      return
+    }
+
+    if (avoidanceMode) {
+      robot.rotation.y = avoidanceDirection
+      const avoidX = robot.position.x + Math.sin(avoidanceDirection) * robotSpeed.value
+      const avoidZ = robot.position.z + Math.cos(avoidanceDirection) * robotSpeed.value
+
+      if (!isBlocked(avoidX, avoidZ)) {
+        robot.position.x = avoidX
+        robot.position.z = avoidZ
+
+        // Check if we can return to normal pattern
+        const normalX = robot.position.x + Math.sin(0) * 2 // Forward direction
+        const normalZ = robot.position.z + Math.cos(0) * 2
+        if (!isObstacle(normalX, normalZ)) {
+          avoidanceMode = false
+          robot.rotation.y = 0
+        }
+      }
+      return
+    }
+
+    // Normal lawnmower logic
     if (mowRow === 0 && Math.abs(robot.position.x - minX) > 0.1) {
-      robot.rotation.y = -Math.PI / 2 // Face left
+      robot.rotation.y = -Math.PI / 2
       robot.position.x = Math.max(minX, robot.position.x - robotSpeed.value)
       return
     }
 
     if (mowRow === 0 && Math.abs(robot.position.x - minX) <= 0.1) {
-      robot.rotation.y = 0 // Face down
+      robot.rotation.y = 0
     }
 
     const targetX = minX + mowRow * spacing
     const nextZ = robot.position.z + mowDirection * robotSpeed.value
 
-    if (isWall(robot.position.x, nextZ) || nextZ > maxZ || nextZ < minZ) {
+    if (isBlocked(robot.position.x, nextZ) || nextZ > maxZ || nextZ < minZ) {
       mowRow++
       if (targetX > maxX) {
         exploring = false
@@ -361,7 +598,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     const nextX = spiralState.center.x + Math.cos(spiralState.angle) * spiralState.radius
     const nextZ = spiralState.center.z + Math.sin(spiralState.angle) * spiralState.radius
 
-    if (!isWall(nextX, nextZ)) {
+    if (!isBlocked(nextX, nextZ)) {
       const dx = nextX - robot.position.x
       const dz = nextZ - robot.position.z
       robot.rotation.y = Math.atan2(dx, dz)
@@ -369,19 +606,38 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
       robot.position.x = nextX
       robot.position.z = nextZ
     } else {
+      // Enhanced obstacle handling - move away smartly
       const fs = fieldSize.value
-
       let awayX = 0,
         awayZ = 0
 
-      if (robot.position.x >= fs / 2 - 1) awayX = -1 // Too far right, move left
-      if (robot.position.x <= -fs / 2 + 1) awayX = 1 // Too far left, move right
-      if (robot.position.z >= fs / 2 - 1) awayZ = -1 // Too far forward, move back
-      if (robot.position.z <= -fs / 2 + 1) awayZ = 1 // Too far back, move forward
+      if (robot.position.x >= fs / 2 - 2) awayX = -1
+      if (robot.position.x <= -fs / 2 + 2) awayX = 1
+      if (robot.position.z >= fs / 2 - 2) awayZ = -1
+      if (robot.position.z <= -fs / 2 + 2) awayZ = 1
 
-      robot.position.x += awayX * robotSpeed.value * 2
-      robot.position.z += awayZ * robotSpeed.value * 2
+      // Check for nearby obstacles and move away from them
+      for (const obstacle of obstacleMeshes) {
+        const dx = robot.position.x - obstacle.position.x
+        const dz = robot.position.z - obstacle.position.z
+        const dist = Math.hypot(dx, dz)
 
+        if (dist < 4) {
+          awayX += dx / dist
+          awayZ += dz / dist
+        }
+      }
+
+      const moveDistance = robotSpeed.value * 3
+      const newX = robot.position.x + awayX * moveDistance
+      const newZ = robot.position.z + awayZ * moveDistance
+
+      if (!isBlocked(newX, newZ)) {
+        robot.position.x = newX
+        robot.position.z = newZ
+      }
+
+      // Reset spiral with new center
       spiralState = {
         angle: 0,
         radius: 0.5,
@@ -406,13 +662,15 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     const nextX = robot.position.x + Math.sin(randomWalkState.angle) * robotSpeed.value
     const nextZ = robot.position.z + Math.cos(randomWalkState.angle) * robotSpeed.value
 
-    if (!isWall(nextX, nextZ)) {
+    if (!isBlocked(nextX, nextZ)) {
       robot.position.x = nextX
       robot.position.z = nextZ
       robot.rotation.y = randomWalkState.angle
       randomWalkState.steps--
     } else {
-      randomWalkState.steps = 0 // Pick new direction
+      // Find new direction when blocked
+      randomWalkState.angle = findAvoidanceDirection()
+      randomWalkState.steps = Math.floor(10 + Math.random() * 20)
     }
   }
 
@@ -439,7 +697,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
       if (
         (manualControl.forward || manualControl.backward) &&
-        !isWall(robot.position.x + dx, robot.position.z + dz)
+        !isBlocked(robot.position.x + dx, robot.position.z + dz)
       ) {
         robot.position.x += dx
         robot.position.z += dz
@@ -462,7 +720,6 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
         }
       }
     } else if (exploring) {
-      // Auto mode patterns
       if (currentPattern.value === 'lawnmower') {
         updateLawnmower()
       } else if (currentPattern.value === 'spiral') {
@@ -474,7 +731,7 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
     performLidarScan()
 
-    // Heat seeking behavior in auto mode
+    // Enhanced heat seeking with obstacle avoidance
     if (currentMode.value === 'auto' && heatDetected.value && !seekingHeat) {
       seekingHeat = true
       exploring = false
@@ -502,8 +759,24 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
 
       if (distance > 0.8) {
         direction.normalize()
-        robot.position.add(direction.multiplyScalar(robotSpeed.value * 1.5))
-        robot.rotation.y = Math.atan2(direction.x, direction.z)
+        const nextX = robot.position.x + direction.x * robotSpeed.value * 1.5
+        const nextZ = robot.position.z + direction.z * robotSpeed.value * 1.5
+
+        if (!isBlocked(nextX, nextZ)) {
+          robot.position.x = nextX
+          robot.position.z = nextZ
+          robot.rotation.y = Math.atan2(direction.x, direction.z)
+        } else {
+          // Navigate around obstacle
+          const avoidAngle = findAvoidanceDirection()
+          robot.rotation.y = avoidAngle
+          const avoidX = robot.position.x + Math.sin(avoidAngle) * robotSpeed.value
+          const avoidZ = robot.position.z + Math.cos(avoidAngle) * robotSpeed.value
+          if (!isBlocked(avoidX, avoidZ)) {
+            robot.position.x = avoidX
+            robot.position.z = avoidZ
+          }
+        }
       } else {
         const heatIndex = heatMeshes.indexOf(closestHeat)
         mainScene.remove(closestHeat)
@@ -520,20 +793,31 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     renderCameras()
   }
 
-  // --- Rendering ---
+  // --- Enhanced Rendering with Camera Modes ---
   function renderCameras() {
     if (!mainRenderer || !mainCamera || !miniRenderer || !miniCamera) return
 
-    // First-person camera
-    const cameraOffset = new THREE.Vector3(0, 0.8, -2)
-    const rotatedOffset = cameraOffset.clone().applyEuler(robot.rotation)
-    mainCamera.position.copy(robot.position).add(rotatedOffset)
+    if (cameraMode.value === 'first-person') {
+      // First-person camera
+      const cameraOffset = new THREE.Vector3(0, 0.8, -0.2)
+      const rotatedOffset = cameraOffset.clone().applyEuler(robot.rotation)
+      mainCamera.position.copy(robot.position).add(rotatedOffset)
 
-    const lookTarget = robot.position.clone()
-    lookTarget.y += 0.3
-    const forward = new THREE.Vector3(0, 0, 1).applyEuler(robot.rotation)
-    lookTarget.add(forward.multiplyScalar(2))
-    mainCamera.lookAt(lookTarget)
+      const lookTarget = robot.position.clone()
+      lookTarget.y += 0.3
+      const forward = new THREE.Vector3(0, 0, 1).applyEuler(robot.rotation)
+      lookTarget.add(forward.multiplyScalar(3))
+      mainCamera.lookAt(lookTarget)
+    } else {
+      // Third-person camera
+      const cameraOffset = new THREE.Vector3(0, 4, -6)
+      const rotatedOffset = cameraOffset.clone().applyEuler(robot.rotation)
+      mainCamera.position.copy(robot.position).add(rotatedOffset)
+
+      const lookTarget = robot.position.clone()
+      lookTarget.y += 0.5
+      mainCamera.lookAt(lookTarget)
+    }
 
     mainRenderer.render(mainScene, mainCamera)
     miniRenderer.render(mainScene, miniCamera)
@@ -630,5 +914,13 @@ export function usePathFinder(mainCanvas, miniMapCanvas, miniMapFog) {
     heatDetected,
     robotSpeed,
     manualControl,
+    cameraMode,
+    toggleCameraMode,
+    advancedHeatSearch,
+    toggleAdvancedHeatSearch,
+    numObstacles,
+    spawnMoreObstacles,
+    detectedHeatTypes,
+    heatTypes,
   }
 }

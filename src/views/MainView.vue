@@ -27,17 +27,36 @@ const {
   heatDetected,
   robotSpeed,
   manualControl,
+  cameraMode,
+  toggleCameraMode,
+  advancedHeatSearch,
+  toggleAdvancedHeatSearch,
+  numObstacles,
+  spawnMoreObstacles,
+  detectedHeatTypes,
+  heatTypes, 
 } = usePathFinder(mainCanvas, miniMapCanvas, miniMapFog)
 </script>
 
 <template>
   <div class="main-view">
+    <!-- Pattern toggle buttons -->
     <div class="pattern-toggle">
       <button @click="togglePattern">Pattern: {{ currentPattern }}</button>
       <button @click="toggleMode">Mode: {{ currentMode }}</button>
+      <button @click="toggleCameraMode">Camera: {{ cameraMode }}</button>
     </div>
 
     <div class="settings-panel">
+      <!-- Camera Settings -->
+      <div class="settings-group">
+        <h3>Camera Settings</h3>
+        <label>
+          <input type="checkbox" v-model="advancedHeatSearch" />
+          Advanced Heat Search (X-Ray Vision)
+        </label>
+      </div>
+
       <!-- LiDAR Settings -->
       <div class="settings-group">
         <h3>LiDAR Settings</h3>
@@ -58,9 +77,9 @@ const {
         </label>
       </div>
 
-      <!-- Field Settings -->
+      <!-- Environment Settings -->
       <div class="settings-group">
-        <h3>Field Settings</h3>
+        <h3>Environment</h3>
         <label>
           Field Size:
           <span class="field-controls">
@@ -70,22 +89,36 @@ const {
           </span>
         </label>
         <label>
+          Obstacles:
+          <input type="range" min="0" max="8" step="1" v-model.number="numObstacles" />
+          {{ numObstacles }}
+        </label>
+        <button @click="spawnMoreObstacles" class="spawn-btn">Respawn Obstacles</button>
+        <label>
           <input type="checkbox" v-model="texturesEnabled" />
           Textures
         </label>
       </div>
 
-      <!-- Heat Objects -->
+      <!-- Heat Detection -->
       <div class="settings-group">
-        <h3>Heat Objects</h3>
+        <h3>Heat Detection</h3>
         <label>
-          Count:
+          Heat Objects:
           <input type="range" min="0" max="10" step="1" v-model.number="numHeatObjects" />
           {{ numHeatObjects }}
         </label>
         <button @click="spawnMoreHeat" class="spawn-btn">Respawn Heat Objects</button>
+
         <div class="heat-status" :class="{ detected: heatDetected }">
           Heat Detected: {{ heatDetected ? 'YES' : 'NO' }}
+        </div>
+
+        <div v-if="detectedHeatTypes.length > 0" class="detected-heat-types">
+          <h4>Detected Heat Signatures:</h4>
+          <div v-for="heatType in detectedHeatTypes" :key="heatType" class="heat-type">
+            {{ heatType }}
+          </div>
         </div>
       </div>
 
@@ -366,5 +399,26 @@ const {
 
 .settings-panel::-webkit-scrollbar-thumb:hover {
   background: #777;
+}
+
+.detected-heat-types {
+  margin-top: 0.5em;
+  padding: 0.5em;
+  background: #333;
+  border-radius: 4px;
+}
+
+.detected-heat-types h4 {
+  margin: 0 0 0.5em 0;
+  font-size: 0.9em;
+  color: #4caf50;
+}
+
+.heat-type {
+  padding: 0.2em 0.4em;
+  margin: 0.2em 0;
+  background: #444;
+  border-radius: 3px;
+  font-size: 0.8em;
 }
 </style>
